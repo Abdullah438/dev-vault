@@ -80,7 +80,7 @@ export default function ProfileClient({ user }: ProfileClientProps) {
 
           <h1 className="login-title">Your profile</h1>
           <p className="login-subtitle">
-            Update your display name. Stored securely in your auth account — no separate users table.
+            Set how your name appears in DevVault.
           </p>
         </div>
 
@@ -122,7 +122,7 @@ export default function ProfileClient({ user }: ProfileClientProps) {
               <Mail size={16} style={{ flexShrink: 0, color: 'var(--text-muted)' }} />
               <span id="profile-email">{user.email}</span>
             </div>
-            <p className="profile-field-hint">Managed by your sign-in provider and cannot be changed here.</p>
+            <p className="profile-field-hint">Email cannot be changed.</p>
           </div>
 
           <div className="auth-field">

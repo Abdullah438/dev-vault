@@ -819,7 +819,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
           
           <h2 style={{ fontSize: '1.75rem', marginBottom: '0.5rem' }}>Unlock Dev<span className="text-gradient">Vault</span></h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-            Enter your Master Passphrase to derive your local AES-256-GCM key.
+            Enter your master passphrase to unlock your vault.
             <strong> We never store or transmit this passphrase.</strong>
           </p>
           <div style={{ display: 'inline-block', background: 'rgba(6,182,212,0.1)', border: '1px solid rgba(6,182,212,0.2)', padding: '0.35rem 0.75rem', borderRadius: '20px', fontSize: '0.75rem', color: 'var(--accent-cyan)', marginBottom: '2rem' }}>
@@ -933,7 +933,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
           </div>
           <div>
             <h2 style={{ fontSize: '1.25rem', margin: 0 }}>Dev<span className="text-gradient">Vault</span></h2>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Zero-Knowledge Encrypted</span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Encrypted vault</span>
           </div>
         </div>
 
@@ -1194,7 +1194,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                   <div>
                     <h3 style={{ fontSize: '1.15rem', margin: 0 }}>Add New Secret</h3>
                     <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.3 }}>
-                      Encrypted locally · Zero-knowledge
+                      Only you can read what you save
                     </p>
                   </div>
                 </div>
@@ -1402,17 +1402,11 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
 
                     {newCategory === 'Password' && renderPasswordGeneratorOptions(pwdLength, setPwdLength, pwdUpper, setPwdUpper, pwdLower, setPwdLower, pwdNumbers, setPwdNumbers, pwdSymbols, setPwdSymbols)}
 
-                    {newCategory === 'Auth Secret' && (
-                      <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.45 }}>
-                        Autogenerate produces a raw 384-bit secret (48 random bytes, base64url, no prefix).
-                      </p>
-                    )}
-
                     {newCategory === 'API Key' && renderPrefixOption(apiKeyPrefix, setApiKeyPrefix)}
 
                     {newCategory === 'GitHub Token' && (
                       <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.45 }}>
-                        Paste a token from GitHub → Settings → Developer settings → Personal access tokens.
+                        Paste a personal access token from your GitHub account settings.
                       </p>
                     )}
 
@@ -1486,7 +1480,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                   <div>
                     <h3 style={{ fontSize: '1.15rem', margin: 0 }}>Edit Secret</h3>
                     <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.3 }}>
-                      Encrypted locally · Zero-knowledge
+                      Only you can read what you save
                     </p>
                   </div>
                 </div>
@@ -1602,12 +1596,6 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                     </div>
 
                     {editCategory === 'Password' && renderPasswordGeneratorOptions(pwdLength, setPwdLength, pwdUpper, setPwdUpper, pwdLower, setPwdLower, pwdNumbers, setPwdNumbers, pwdSymbols, setPwdSymbols)}
-
-                    {editCategory === 'Auth Secret' && (
-                      <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.45 }}>
-                        Autogenerate produces a raw 384-bit secret (48 random bytes, base64url, no prefix).
-                      </p>
-                    )}
 
                     {editCategory === 'API Key' && renderPrefixOption(apiKeyPrefix, setApiKeyPrefix)}
 

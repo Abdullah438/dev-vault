@@ -137,8 +137,18 @@ function LoginContent() {
         <p className="login-subtitle">
           {isResetting
             ? 'Enter your email and we\u2019ll send you a reset link.'
-            : 'Secure, encrypted API keys and auth secrets manager.'}
+            : 'Generate and manage API keys, passwords, and secrets in one secure vault.'}
         </p>
+
+        {!isResetting && (
+          <div className="auth-privacy-note">
+            <ShieldCheck size={18} style={{ flexShrink: 0, marginTop: 1 }} />
+            <div>
+              <strong>Your secrets stay yours.</strong>{' '}
+              Everything is encrypted in your browser before it is saved. Only your master passphrase can unlock the vault — we never receive it and cannot read your data.
+            </div>
+          </div>
+        )}
 
         {authError && (
           <div className="auth-alert auth-alert-error">
@@ -306,7 +316,7 @@ function LoginContent() {
 
         <div className="auth-footer">
           <Lock size={14} style={{ flexShrink: 0 }} />
-          <span>AES-256-GCM encrypted storage</span>
+          <span>Encrypted before it leaves your device</span>
         </div>
       </div>
     </main>

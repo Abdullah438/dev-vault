@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "DevVault | Secure API Keys & Auth Secrets",
-  description: "Securely generate, encrypt, and manage developer keys and secrets with server-side AES-256-GCM encryption.",
+  description: "Generate and manage API keys and secrets in an encrypted vault. Your data is locked in your browser — only you hold the key.",
   icons: {
     icon: '/logo.svg',
     shortcut: '/logo.svg',
