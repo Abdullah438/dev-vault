@@ -1,11 +1,9 @@
 import { NextResponse } from 'next/server';
 import { createServer, createAdminClient } from '@/lib/supabase/server';
-import { generateSecretValue, encrypt } from '@/lib/crypto';
 
 /**
  * GET /api/secrets
- * Retrieves a list of secrets belonging to the authenticated user.
- * Note: It does not return the actual encrypted secrets, only metadata.
+ * Retrieves a list of secrets (metadata only, including category) belonging to the authenticated user.
  */
 export async function GET() {
   try {
@@ -19,7 +17,7 @@ export async function GET() {
     const adminClient = createAdminClient();
     const { data, error } = await adminClient
       .from('secrets')
-      .select('id, name, prefix, created_at, last_used_at')
+      .select('id, name, prefix, category, created_at, last_used_at')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
@@ -39,8 +37,7 @@ export async function GET() {
 
 /**
  * POST /api/secrets
- * Generates a new secret, encrypts it on the server using AES-256-GCM,
- * stores it in the database via the admin client, and returns the plaintext version once.
+ * Saves a client-side encrypted secret payload along with its category.
  */
 export async function POST(request: Request) {
   try {
@@ -52,16 +49,14 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { name } = body;
+    const { name, encrypted_secret, iv, prefix, category } = body;
 
     if (!name || typeof name !== 'string' || name.trim() === '') {
       return NextResponse.json({ error: 'Secret name is required.' }, { status: 400 });
     }
-
-    // Generate, prefix, and encrypt the secret key
-    const plaintextSecret = generateSecretValue();
-    const prefix = plaintextSecret.substring(0, 8); // e.g. 'sec_abcd'
-    const { encryptedText, ivHex, authTagHex } = encrypt(plaintextSecret);
+    if (!encrypted_secret || !iv || !prefix) {
+      return NextResponse.json({ error: 'Missing client-side encryption parameters.' }, { status: 400 });
+    }
 
     const adminClient = createAdminClient();
     const { data, error } = await adminClient
@@ -69,25 +64,22 @@ export async function POST(request: Request) {
       .insert({
         user_id: user.id,
         name: name.trim(),
-        encrypted_secret: encryptedText,
-        iv: ivHex,
-        auth_tag: authTagHex,
+        category: category || 'API Key',
+        encrypted_secret,
+        iv,
+        auth_tag: 'combined',
         prefix,
       })
-      .select('id, name, prefix, created_at')
+      .select('id, name, prefix, category, created_at')
       .single();
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // Return the inserted metadata AND the one-time plaintext key to display
-    return NextResponse.json({
-      ...data,
-      plaintext: plaintextSecret,
-    });
+    return NextResponse.json(data);
   } catch (error: any) {
-    console.error('Error generating secret:', error);
+    console.error('Error saving encrypted secret:', error);
     return NextResponse.json(
       { error: error.message || 'An unexpected error occurred.' },
       { status: 500 }

@@ -4,6 +4,13 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { 
+  deriveSaltFromUserId, 
+  deriveMasterKey, 
+  encryptClient, 
+  decryptClient, 
+  generateClientSecretValue 
+} from '@/lib/client-crypto';
+import { 
   Key, 
   Plus, 
   Eye, 
@@ -14,16 +21,27 @@ import {
   Calendar, 
   Clock, 
   ShieldAlert, 
-  EyeOff, 
-  Loader2,
-  Lock,
-  User
+  Loader2, 
+  Lock, 
+  Unlock, 
+  User, 
+  ShieldCheck,
+  Pencil,
+  EyeOff,
+  FolderOpen,
+  CreditCard,
+  FileText,
+  Terminal,
+  Bitcoin,
+  Landmark,
+  FileBadge
 } from 'lucide-react';
 
 interface SecretMetadata {
   id: string;
   name: string;
   prefix: string;
+  category: string;
   created_at: string;
   last_used_at: string | null;
 }
@@ -37,17 +55,68 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
   const router = useRouter();
   const supabase = createClient();
   
-  // State
+  // Vault secrets metadata state
   const [secrets, setSecrets] = useState<SecretMetadata[]>(initialSecrets);
+  
+  // Zero-Knowledge Master Key State
+  const [masterPassphrase, setMasterPassphrase] = useState('');
+  const [showLockscreenPassphrase, setShowLockscreenPassphrase] = useState(false);
+  const [masterKey, setMasterKey] = useState<CryptoKey | null>(null);
+  const [isDerivingKey, setIsDerivingKey] = useState(false);
+  const [lockscreenError, setLockscreenError] = useState<string | null>(null);
+  
+  // "Add Secret" Modal States
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newName, setNewName] = useState('');
+  const [newCategory, setNewCategory] = useState('API Key');
+  const [creationMode, setCreationMode] = useState<'generate' | 'custom'>('generate');
+  const [customSecretValue, setCustomSecretValue] = useState('');
+  
+  // Credit Card Creation Fields
+  const [ccCardholder, setCcCardholder] = useState('');
+  const [ccNumber, setCcNumber] = useState('');
+  const [ccExpiry, setCcExpiry] = useState('');
+  const [ccCvv, setCcCvv] = useState('');
+
+  // Bank Account Creation Fields
+  const [baHolder, setBaHolder] = useState('');
+  const [baBankName, setBaBankName] = useState('');
+  const [baNumber, setBaNumber] = useState('');
+  const [baRouting, setBaRouting] = useState('');
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // "Edit Secret" Modal States
+  const [editingSecret, setEditingSecret] = useState<SecretMetadata | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editCategory, setEditCategory] = useState('');
+  const [editSecretValue, setEditSecretValue] = useState('');
+  const [showEditPlaintext, setShowEditPlaintext] = useState(false);
+  
+  // Credit Card Edit Fields
+  const [editCcCardholder, setEditCcCardholder] = useState('');
+  const [editCcNumber, setEditCcNumber] = useState('');
+  const [editCcExpiry, setEditCcExpiry] = useState('');
+  const [editCcCvv, setEditCcCvv] = useState('');
+
+  // Bank Account Edit Fields
+  const [editBaHolder, setEditBaHolder] = useState('');
+  const [editBaBankName, setEditBaBankName] = useState('');
+  const [editBaNumber, setEditBaNumber] = useState('');
+  const [editBaRouting, setEditBaRouting] = useState('');
+
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   
   // Modals / Overlays
   const [newlyGeneratedKey, setNewlyGeneratedKey] = useState<string | null>(null);
   const [newlyGeneratedName, setNewlyGeneratedName] = useState('');
+  
+  // Revealed Value Modal States
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [revealedName, setRevealedName] = useState('');
+  const [revealedCategory, setRevealedCategory] = useState('');
   
   const [loadingSecretId, setLoadingSecretId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SecretMetadata | null>(null);
@@ -56,101 +125,483 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
   // Copy feedback state
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
   // Logout Handler
   const handleLogout = async () => {
     try {
+      setIsLoggingOut(true);
       await supabase.auth.signOut();
       router.push('/login');
       router.refresh();
     } catch (err) {
       console.error('Logout error:', err);
+      setIsLoggingOut(false);
     }
   };
 
-  // Generate Secret Handler
+  const renderLogoutModal = () => {
+    if (!showLogoutConfirm) return null;
+    return (
+      <div className="modal-overlay" style={{ zIndex: 100 }}>
+        <div className="modal-content" style={{ maxWidth: '400px', borderTop: '4px solid var(--warning)' }}>
+          <div className="modal-header">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(245, 158, 11, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(245, 158, 11, 0.3)', boxShadow: '0 0 14px rgba(245, 158, 11, 0.2)' }}>
+                <LogOut size={18} color="var(--warning)" />
+              </div>
+              <h3 style={{ fontSize: '1.15rem', margin: 0 }}>Sign Out</h3>
+            </div>
+          </div>
+          <div className="modal-body">
+            <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              Are you sure you want to sign out? You will need to authenticate and enter your master passphrase again to access your vault.
+            </p>
+          </div>
+          <div className="modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+            <button onClick={() => setShowLogoutConfirm(false)} disabled={isLoggingOut} className="btn btn-secondary" style={{ flex: 1 }}>
+              Cancel
+            </button>
+            <button onClick={handleLogout} disabled={isLoggingOut} className="btn btn-primary" style={{ flex: 1, borderColor: 'var(--warning)', color: 'var(--warning)', background: 'rgba(245, 158, 11, 0.1)' }}>
+              {isLoggingOut ? <><Loader2 size={16} className="animate-spin" /><span>Signing out...</span></> : <span>Sign Out</span>}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Derive local Master Key from user passphrase
+  const handleUnlockVault = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!masterPassphrase.trim()) return;
+
+    try {
+      setIsDerivingKey(true);
+      setLockscreenError(null);
+      
+      // Derive salt consistently from the user's UUID
+      const salt = await deriveSaltFromUserId(user.id);
+      
+      // PBKDF2 100,000 iterations to derive AES-256-GCM key
+      const key = await deriveMasterKey(masterPassphrase, salt);
+      
+      // 1. Locate verification token
+      const verificationRecord = secrets.find(s => s.name === '__devvault_verification__');
+      
+      if (verificationRecord) {
+        // Verify passphrase against the stored token
+        const res = await fetch(`/api/secrets/${verificationRecord.id}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error('Verification request failed.');
+        
+        try {
+          const decrypted = await decryptClient(data.encrypted_secret, data.iv, key);
+          if (decrypted !== 'devvault:verified') {
+            throw new Error('Verification payload mismatch');
+          }
+        } catch (decryptErr) {
+          setLockscreenError('Incorrect Master Passphrase. Please try again.');
+          return;
+        }
+      } else {
+        // No verification token exists yet.
+        // Find if they have other secrets (migration scenario)
+        const firstSecret = secrets.find(s => s.name !== '__devvault_verification__');
+        
+        if (firstSecret) {
+          // Attempt to decrypt first existing secret to verify passphrase correctness
+          const res = await fetch(`/api/secrets/${firstSecret.id}`);
+          const data = await res.json();
+          if (!res.ok) throw new Error('Migration verification request failed.');
+          
+          try {
+            await decryptClient(data.encrypted_secret, data.iv, key);
+          } catch (decryptErr) {
+            setLockscreenError('Incorrect Master Passphrase. Please try again.');
+            return;
+          }
+          
+          // Decryption succeeded! Initialize verification token for future unlocks
+          await createVerificationToken(key);
+        } else {
+          // Vault is completely empty (new user). Initialize verification token
+          await createVerificationToken(key);
+        }
+      }
+      
+      setMasterKey(key);
+    } catch (err: any) {
+      console.error(err);
+      setLockscreenError('An error occurred during vault verification.');
+    } finally {
+      setIsDerivingKey(false);
+    }
+  };
+
+  // Create internal verification token
+  const createVerificationToken = async (derivedKey: CryptoKey) => {
+    try {
+      const { ciphertext, iv } = await encryptClient('devvault:verified', derivedKey);
+      const res = await fetch('/api/secrets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: '__devvault_verification__',
+          category: 'System',
+          encrypted_secret: ciphertext,
+          iv: iv,
+          prefix: 'ver_'
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const tokenItem: SecretMetadata = {
+          id: data.id,
+          name: data.name,
+          prefix: data.prefix,
+          category: data.category,
+          created_at: data.created_at,
+          last_used_at: null,
+        };
+        setSecrets(prev => [tokenItem, ...prev]);
+      }
+    } catch (err) {
+      console.error('Failed to create verification token:', err);
+    }
+  };
+
+  // Lock Vault
+  const handleLockVault = () => {
+    setMasterKey(null);
+    setMasterPassphrase('');
+    setNewlyGeneratedKey(null);
+    setRevealedKey(null);
+    setErrorMsg(null);
+  };
+
+  // Generate / Save Secret Handler (Client-Side Encryption)
   const handleCreateSecret = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newName.trim()) return;
+    if (!newName.trim() || !masterKey) return;
+
+    // Validate based on category selection
+    if (newCategory === 'Credit Card' && (!ccNumber.trim() || !ccCardholder.trim())) {
+      setErrorMsg('Card Number and Cardholder are required.');
+      return;
+    }
+    if (newCategory === 'Bank Account' && (!baNumber.trim() || !baHolder.trim() || !baBankName.trim())) {
+      setErrorMsg('Account Number, Holder Name, and Bank Name are required.');
+      return;
+    }
+    if (['API Key', 'Auth Secret', 'Password'].includes(newCategory) && creationMode === 'custom' && !customSecretValue.trim()) {
+      setErrorMsg('Secret value cannot be empty.');
+      return;
+    }
+    if (['Secure Note', 'SSH Key', 'Crypto Seed Phrase', 'Software License'].includes(newCategory) && !customSecretValue.trim()) {
+      setErrorMsg('Secret content is required.');
+      return;
+    }
 
     try {
       setIsGenerating(true);
       setErrorMsg(null);
       
+      // 1. Pack the plaintext secret value
+      let plaintextSecret = '';
+      if (newCategory === 'Credit Card') {
+        plaintextSecret = JSON.stringify({
+          cardholder: ccCardholder.trim(),
+          number: ccNumber.trim(),
+          expiry: ccExpiry.trim(),
+          cvv: ccCvv.trim()
+        });
+      } else if (newCategory === 'Bank Account') {
+        plaintextSecret = JSON.stringify({
+          holder: baHolder.trim(),
+          bankName: baBankName.trim(),
+          accountNumber: baNumber.trim(),
+          routingNumber: baRouting.trim()
+        });
+      } else if (['API Key', 'Auth Secret', 'Password'].includes(newCategory) && creationMode === 'generate') {
+        plaintextSecret = generateClientSecretValue();
+      } else {
+        plaintextSecret = customSecretValue;
+      }
+        
+      // Derive a safe identifier prefix (to prevent leakage of custom passwords)
+      let prefix = 'usr_';
+      if (newCategory === 'Credit Card') {
+        prefix = 'crd_' + ccNumber.trim().slice(-4); // Last 4 digits of card
+      } else if (newCategory === 'Bank Account') {
+        prefix = 'bnk_' + baNumber.trim().slice(-4); // Last 4 digits of bank account
+      } else if (newCategory === 'API Key' && creationMode === 'generate') {
+        prefix = plaintextSecret.substring(0, 8);
+      } else {
+        prefix = 'usr_' + Math.random().toString(36).substring(2, 6);
+      }
+      
+      // 2. Encrypt locally using Master Key
+      const { ciphertext, iv } = await encryptClient(plaintextSecret, masterKey);
+      
+      // 3. Post only the encrypted payload to the server
       const res = await fetch('/api/secrets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName }),
+        body: JSON.stringify({ 
+          name: newName.trim(),
+          encrypted_secret: ciphertext,
+          iv: iv,
+          prefix: prefix,
+          category: newCategory
+        }),
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to generate key.');
+      if (!res.ok) throw new Error(data.error || 'Failed to save encrypted key.');
 
-      // Add new secret to the list
+      // Add to list metadata
       const newSecretItem: SecretMetadata = {
         id: data.id,
         name: data.name,
         prefix: data.prefix,
+        category: data.category,
         created_at: data.created_at,
         last_used_at: null,
       };
       
       setSecrets([newSecretItem, ...secrets]);
-      setNewlyGeneratedKey(data.plaintext);
-      setNewlyGeneratedName(data.name);
+      
+      // If it was a randomly generated API Key/Password, show the raw value popup
+      if (['API Key', 'Password'].includes(newCategory) && creationMode === 'generate') {
+        setNewlyGeneratedKey(plaintextSecret);
+        setNewlyGeneratedName(data.name);
+      }
+      
+      // Reset states & Close Modal
       setNewName('');
+      setCustomSecretValue('');
+      setNewCategory('API Key');
+      setCreationMode('generate');
+      
+      setCcCardholder('');
+      setCcNumber('');
+      setCcExpiry('');
+      setCcCvv('');
+
+      setBaHolder('');
+      setBaBankName('');
+      setBaNumber('');
+      setBaRouting('');
+
+      setIsAddModalOpen(false);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Something went wrong.');
+      setErrorMsg(err.message || 'Something went wrong during generation.');
     } finally {
       setIsGenerating(false);
     }
   };
 
-  // Fetch and Reveal Secret
-  const handleRevealSecret = async (id: string, name: string) => {
+  // Fetch and decrypt secret to open the Edit Modal
+  const handleStartEditSecret = async (sec: SecretMetadata) => {
+    if (!masterKey) return;
     try {
-      setLoadingSecretId(id);
+      setLoadingSecretId(sec.id);
       setErrorMsg(null);
+      setEditError(null);
 
-      const res = await fetch(`/api/secrets/${id}`);
+      // Fetch encrypted secret payload
+      const res = await fetch(`/api/secrets/${sec.id}`);
       const data = await res.json();
-      
-      if (!res.ok) throw new Error(data.error || 'Failed to retrieve secret.');
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch.');
 
-      setRevealedKey(data.plaintext);
-      setRevealedName(name);
-      
-      // Update the local listing's last_used_at timestamp to match DB audit update
-      setSecrets(secrets.map(sec => 
-        sec.id === id ? { ...sec, last_used_at: new Date().toISOString() } : sec
-      ));
+      // Decrypt locally
+      const plaintext = await decryptClient(data.encrypted_secret, data.iv, masterKey);
+
+      setEditingSecret(sec);
+      setEditName(sec.name);
+      setEditCategory(sec.category);
+      setShowEditPlaintext(false);
+
+      // Prefill fields based on category
+      if (sec.category === 'Credit Card') {
+        try {
+          const parsed = JSON.parse(plaintext);
+          setEditCcCardholder(parsed.cardholder || '');
+          setEditCcNumber(parsed.number || '');
+          setEditCcExpiry(parsed.expiry || '');
+          setEditCcCvv(parsed.cvv || '');
+        } catch {
+          setEditCcNumber(plaintext);
+        }
+      } else if (sec.category === 'Bank Account') {
+        try {
+          const parsed = JSON.parse(plaintext);
+          setEditBaHolder(parsed.holder || '');
+          setEditBaBankName(parsed.bankName || '');
+          setEditBaNumber(parsed.accountNumber || '');
+          setEditBaRouting(parsed.routingNumber || '');
+        } catch {
+          setEditBaNumber(plaintext);
+        }
+      } else {
+        setEditSecretValue(plaintext);
+      }
+
     } catch (err: any) {
-      setErrorMsg(err.message || 'Could not decrypt the secret.');
+      console.error('Decryption fail on edit start:', err);
+      setErrorMsg('Failed to decrypt. Passphrase may be invalid.');
     } finally {
       setLoadingSecretId(null);
     }
   };
 
-  // Direct Fetch & Copy to Clipboard
-  const handleFetchAndCopy = async (id: string) => {
+  // Save Edited Secret (Client-Side Encryption)
+  const handleSaveEditSecret = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingSecret || !editName.trim() || !masterKey) return;
+
+    try {
+      setIsSavingEdit(true);
+      setEditError(null);
+
+      // Pack edited value
+      let plaintextSecret = '';
+      if (editCategory === 'Credit Card') {
+        plaintextSecret = JSON.stringify({
+          cardholder: editCcCardholder.trim(),
+          number: editCcNumber.trim(),
+          expiry: editCcExpiry.trim(),
+          cvv: editCcCvv.trim()
+        });
+      } else if (editCategory === 'Bank Account') {
+        plaintextSecret = JSON.stringify({
+          holder: editBaHolder.trim(),
+          bankName: editBaBankName.trim(),
+          accountNumber: editBaNumber.trim(),
+          routingNumber: editBaRouting.trim()
+        });
+      } else {
+        plaintextSecret = editSecretValue;
+      }
+
+      // Prefix derivation
+      let prefix = 'usr_';
+      if (editCategory === 'Credit Card') {
+        prefix = 'crd_' + editCcNumber.trim().slice(-4);
+      } else if (editCategory === 'Bank Account') {
+        prefix = 'bnk_' + editBaNumber.trim().slice(-4);
+      } else if (editCategory === 'API Key' && plaintextSecret.startsWith('sec_')) {
+        prefix = plaintextSecret.substring(0, 8);
+      } else {
+        prefix = 'usr_' + Math.random().toString(36).substring(2, 6);
+      }
+
+      // Encrypt locally using Master Key
+      const { ciphertext, iv } = await encryptClient(plaintextSecret, masterKey);
+
+      // Call dynamic PUT API route
+      const res = await fetch(`/api/secrets/${editingSecret.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editName.trim(),
+          encrypted_secret: ciphertext,
+          iv: iv,
+          prefix: prefix,
+          category: editCategory
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update.');
+
+      // Update in state list
+      setSecrets(secrets.map(sec => 
+        sec.id === editingSecret.id 
+          ? { ...sec, name: data.name, category: data.category, prefix: data.prefix } 
+          : sec
+      ));
+
+      // Close Edit Modal
+      setEditingSecret(null);
+    } catch (err: any) {
+      console.error(err);
+      setEditError(err.message || 'Failed to encrypt and save changes.');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  // Fetch, Decrypt & Reveal Secret (Client-Side Decryption)
+  const handleRevealSecret = async (id: string, name: string) => {
+    if (!masterKey) return;
     try {
       setLoadingSecretId(id);
+      setErrorMsg(null);
+
+      // Fetch encrypted payload
       const res = await fetch(`/api/secrets/${id}`);
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to retrieve payload.');
+
+      // Decrypt locally
+      const plaintext = await decryptClient(data.encrypted_secret, data.iv, masterKey);
       
+      const targetSecret = secrets.find(s => s.id === id);
+      setRevealedCategory(targetSecret?.category || 'API Key');
+      setRevealedKey(plaintext);
+      setRevealedName(name);
+      
+      setSecrets(secrets.map(sec => 
+        sec.id === id ? { ...sec, last_used_at: new Date().toISOString() } : sec
+      ));
+    } catch (err: any) {
+      console.error('Decryption error:', err);
+      setErrorMsg('Decryption failed. Master Passphrase is invalid.');
+    } finally {
+      setLoadingSecretId(null);
+    }
+  };
+
+  // Fetch, Decrypt & Copy to Clipboard
+  const handleFetchAndCopy = async (id: string) => {
+    if (!masterKey) return;
+    try {
+      setLoadingSecretId(id);
+      setErrorMsg(null);
+      
+      const res = await fetch(`/api/secrets/${id}`);
+      const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to fetch.');
 
-      await navigator.clipboard.writeText(data.plaintext);
-      setCopiedId(id);
+      // Decrypt locally
+      const plaintext = await decryptClient(data.encrypted_secret, data.iv, masterKey);
       
-      // Reset copied indicator after 2s
+      const targetSecret = secrets.find(s => s.id === id);
+      
+      // If it is multi-field card/bank details, copy the main number. Else copy raw plaintext.
+      let copyValue = plaintext;
+      if (targetSecret?.category === 'Credit Card' || targetSecret?.category === 'Bank Account') {
+        try {
+          const parsed = JSON.parse(plaintext);
+          copyValue = parsed.number || parsed.accountNumber || plaintext;
+        } catch {
+          copyValue = plaintext;
+        }
+      }
+
+      await navigator.clipboard.writeText(copyValue);
+      setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
       
-      // Update local last_used_at timestamp
       setSecrets(secrets.map(sec => 
         sec.id === id ? { ...sec, last_used_at: new Date().toISOString() } : sec
       ));
     } catch (err) {
-      console.error('Copy failed:', err);
+      console.error('Decryption/Copy failed:', err);
+      setErrorMsg('Decryption failed. Master Passphrase is invalid.');
     } finally {
       setLoadingSecretId(null);
     }
@@ -167,9 +618,8 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to delete key.');
+      if (!res.ok) throw new Error(data.error || 'Failed to delete.');
 
-      // Remove from state
       setSecrets(secrets.filter(sec => sec.id !== deleteTarget.id));
       setDeleteTarget(null);
     } catch (err: any) {
@@ -180,9 +630,13 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
   };
 
   const copyToClipboard = async (text: string, idStr: string) => {
-    await navigator.clipboard.writeText(text);
-    setCopiedId(idStr);
-    setTimeout(() => setCopiedId(null), 2000);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(idStr);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy to clipboard:', err);
+    }
   };
 
   const formatDate = (dateStr: string) => {
@@ -195,19 +649,177 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
     });
   };
 
+  const getCategoryBadgeClass = (category: string) => {
+    switch (category) {
+      case 'API Key':
+        return 'badge-api';
+      case 'Auth Secret':
+        return 'badge-auth';
+      case 'Password':
+        return 'badge-password';
+      case 'Secure Note':
+        return 'badge-note';
+      case 'Credit Card':
+      case 'Bank Account':
+        return 'badge-finance';
+      case 'SSH Key':
+      case 'Software License':
+      case 'Crypto Seed Phrase':
+        return 'badge-dev';
+      default:
+        return 'badge-code';
+    }
+  };
+
+  const visibleSecrets = secrets.filter(sec => sec.name !== '__devvault_verification__');
+
+  // Render Lockscreen if local Master Key is not derived
+  if (!masterKey) {
+    return (
+      <>
+      {renderLogoutModal()}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '100vh',
+        padding: '1rem',
+        position: 'relative'
+      }}>
+        <div className="glass-panel" style={{
+          width: '100%',
+          maxWidth: '460px',
+          padding: '2.5rem 2rem',
+          borderRadius: 'var(--border-radius-lg)',
+          boxShadow: 'var(--glass-shadow)',
+          textAlign: 'center'
+        }}>
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: '60px',
+            height: '60px',
+            borderRadius: '15px',
+            background: 'var(--accent-gradient)',
+            marginBottom: '1.5rem',
+            position: 'relative'
+          }}>
+            <div style={{
+              position: 'absolute',
+              inset: 0,
+              borderRadius: 'inherit',
+              animation: 'pulseRadial 3s infinite cubic-bezier(0.4, 0, 0.6, 1)',
+              zIndex: 0
+            }} />
+            <Lock size={26} color="#ffffff" style={{ position: 'relative', zIndex: 1 }} />
+          </div>
+          
+          <h2 style={{ fontSize: '1.75rem', marginBottom: '0.5rem' }}>Unlock Dev<span className="text-gradient">Vault</span></h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
+            Enter your Master Passphrase to derive your local AES-256-GCM key.
+            <strong> We never store or transmit this passphrase.</strong>
+          </p>
+          <div style={{ display: 'inline-block', background: 'rgba(6,182,212,0.1)', border: '1px solid rgba(6,182,212,0.2)', padding: '0.35rem 0.75rem', borderRadius: '20px', fontSize: '0.75rem', color: 'var(--accent-cyan)', marginBottom: '2rem' }}>
+            {visibleSecrets.length} encrypted items awaiting unlock
+          </div>
+
+          {lockscreenError && (
+            <div style={{
+              padding: '0.75rem',
+              background: 'var(--danger-glow)',
+              border: '1px solid rgba(244, 63, 94, 0.2)',
+              borderRadius: 'var(--border-radius-sm)',
+              color: 'var(--danger)',
+              fontSize: '0.85rem',
+              marginBottom: '1.5rem',
+              textAlign: 'left',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem'
+            }}>
+              <ShieldAlert size={16} />
+              <span>{lockscreenError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleUnlockVault}>
+            <div className="form-group" style={{ textAlign: 'left', position: 'relative' }}>
+              <label htmlFor="passphrase" className="form-label">Master Passphrase</label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  id="passphrase"
+                  type={showLockscreenPassphrase ? "text" : "password"}
+                  placeholder="Enter passphrase"
+                  value={masterPassphrase}
+                  onChange={(e) => setMasterPassphrase(e.target.value)}
+                  className="form-input"
+                  style={{ width: '100%', paddingRight: '2.5rem' }}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowLockscreenPassphrase(!showLockscreenPassphrase)}
+                  style={{
+                    position: 'absolute',
+                    right: '0.75rem',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center'
+                  }}
+                >
+                  {showLockscreenPassphrase ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+            </div>
+            
+            <button 
+              type="submit" 
+              disabled={isDerivingKey || !masterPassphrase}
+              className="btn btn-primary"
+              style={{ width: '100%', padding: '0.85rem', height: 'var(--input-h)' }}
+            >
+              {isDerivingKey ? (
+                <>
+                  <Loader2 size={18} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
+                  <span>Deriving Key...</span>
+                </>
+              ) : (
+                <>
+                  <Unlock size={18} />
+                  <span>Unlock Vault</span>
+                </>
+              )}
+            </button>
+          </form>
+
+          <button
+            onClick={() => setShowLogoutConfirm(true)}
+            className="btn btn-secondary"
+            style={{ width: '100%', marginTop: '1rem', padding: '0.85rem', height: 'var(--input-h)' }}
+          >
+            <LogOut size={16} />
+            <span>Sign Out</span>
+          </button>
+        </div>
+      </div>
+      </>
+    );
+  }
+
+  // Render Dashboard once Master Key is unlocked
   return (
+    <>
+    {renderLogoutModal()}
     <div className="container" style={{ minHeight: '90vh', position: 'relative' }}>
       
       {/* Header Panel */}
-      <header className="glass-panel" style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '1.25rem 2rem',
-        marginBottom: '2rem',
-        flexWrap: 'wrap',
-        gap: '1rem'
-      }}>
+      <header className="glass-panel dashboard-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <div style={{
             background: 'var(--accent-gradient)',
@@ -219,17 +831,26 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
           </div>
           <div>
             <h2 style={{ fontSize: '1.25rem', margin: 0 }}>Dev<span className="text-gradient">Vault</span></h2>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Secure Encryption Hub</span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Zero-Knowledge Encrypted</span>
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+        <div className="header-actions">
+          <div className="header-user-email">
             <User size={16} />
             <span>{user?.email}</span>
           </div>
           <button 
-            onClick={handleLogout} 
+            onClick={handleLockVault} 
+            className="btn btn-secondary" 
+            style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', borderColor: 'var(--warning)' }}
+            title="Lock Vault & Discard Decryption Key"
+          >
+            <Lock size={16} style={{ color: 'var(--warning)' }} />
+            <span>Lock Vault</span>
+          </button>
+          <button 
+            onClick={() => setShowLogoutConfirm(true)} 
             className="btn btn-secondary" 
             style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
           >
@@ -239,129 +860,60 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
         </div>
       </header>
 
-      {/* Main Content Grid */}
-      <div className="grid grid-cols-2" style={{ alignItems: 'start' }}>
-        
-        {/* Left Side: Create Secret Panel */}
-        <section className="glass-panel">
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Generate New API Key</h2>
-          <p style={{ fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-            Generate a secure, random developer key. The key will be encrypted on the server using AES-256-GCM.
-          </p>
-
-          {errorMsg && (
-            <div style={{
-              padding: '0.75rem 1rem',
-              background: 'var(--danger-glow)',
-              border: '1px solid rgba(244, 63, 94, 0.2)',
-              borderRadius: 'var(--border-radius-sm)',
-              color: 'var(--danger)',
-              fontSize: '0.875rem',
-              marginBottom: '1rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}>
-              <ShieldAlert size={16} />
-              <span>{errorMsg}</span>
-            </div>
-          )}
-
-          <form onSubmit={handleCreateSecret}>
-            <div className="form-group">
-              <label htmlFor="key-name" className="form-label">Key Name / Description</label>
-              <input
-                id="key-name"
-                type="text"
-                placeholder="e.g., Stripe Gateway Webhook, Production App Client"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                className="form-input"
-                maxLength={80}
-                required
-              />
-            </div>
-            <button 
-              type="submit" 
-              disabled={isGenerating || !newName.trim()} 
-              className="btn btn-primary"
-              style={{ width: '100%', padding: '0.85rem' }}
-            >
-              {isGenerating ? (
-                <>
-                  <Loader2 size={18} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
-                  <span>Generating...</span>
-                </>
-              ) : (
-                <>
-                  <Plus size={18} />
-                  <span>Generate Encrypted Secret</span>
-                </>
-              )}
-            </button>
-          </form>
-        </section>
-
-        {/* Right Side: Vault Status Details */}
-        <section className="glass-panel" style={{
-          background: 'linear-gradient(135deg, rgba(15, 22, 40, 0.65) 0%, rgba(30, 20, 50, 0.3) 100%)',
+      {/* Main vault error logs if any */}
+      {errorMsg && (
+        <div style={{
+          padding: '0.75rem 1rem',
+          background: 'var(--danger-glow)',
+          border: '1px solid rgba(244, 63, 94, 0.2)',
+          borderRadius: 'var(--border-radius-sm)',
+          color: 'var(--danger)',
+          fontSize: '0.875rem',
+          marginBottom: '1.5rem',
           display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'center',
-          height: '100%',
-          padding: '2.5rem'
+          alignItems: 'center',
+          gap: '0.5rem'
         }}>
-          <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem' }}>
-            <div style={{
-              background: 'rgba(6, 182, 212, 0.1)',
-              padding: '0.75rem',
-              borderRadius: '12px',
-              color: 'var(--accent-cyan)'
-            }}>
-              <Lock size={28} />
-            </div>
-            <div>
-              <h3 style={{ fontSize: '1.2rem', marginBottom: '0.25rem' }}>Active Vault Protection</h3>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                Your keys are encrypted using a 256-bit Advanced Encryption Standard (AES) key in Galois/Counter Mode.
-              </p>
-            </div>
-          </div>
+          <ShieldAlert size={16} />
+          <span>{errorMsg}</span>
+        </div>
+      )}
 
-          <div style={{
-            borderLeft: '2px solid var(--accent-cyan)',
-            paddingLeft: '1rem',
-            fontSize: '0.85rem',
-            color: 'var(--text-muted)'
-          }}>
-            <p style={{ marginBottom: '0.5rem' }}>
-              • <strong>Server-Side Encryption:</strong> Keys are never processed or decrypted inside database tables. The raw values are unrecoverable without the environment-configured Master Key.
-            </p>
-            <p>
-              • <strong>Granular Audit Trail:</strong> Each decryption query updates a `last_used_at` log, helping track security access.
-            </p>
-          </div>
-        </section>
-
-      </div>
-
-      {/* Bottom Row: Table List of Active Keys */}
-      <main style={{ marginTop: '2.5rem' }}>
+      {/* Main Panel */}
+      <main>
         <div className="glass-panel" style={{ padding: '2rem 1.5rem' }}>
-          <h2 style={{ fontSize: '1.5rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span>Active Keys & Secrets</span>
-            <span style={{ 
-              fontSize: '0.8rem', 
-              background: 'rgba(255,255,255,0.06)', 
-              padding: '0.2rem 0.6rem', 
-              borderRadius: '20px',
-              color: 'var(--text-secondary)'
-            }}>
-              {secrets.length} total
-            </span>
-          </h2>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '1.5rem',
+            flexWrap: 'wrap',
+            gap: '1rem'
+          }}>
+            <h2 style={{ fontSize: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
+              <span>Active Keys & Secrets</span>
+              <span style={{ 
+                fontSize: '0.8rem', 
+                background: 'rgba(255,255,255,0.06)', 
+                padding: '0.2rem 0.6rem', 
+                borderRadius: '20px',
+                color: 'var(--text-secondary)'
+              }}>
+                {visibleSecrets.length} total
+              </span>
+            </h2>
 
-          {secrets.length === 0 ? (
+            <button
+              onClick={() => setIsAddModalOpen(true)}
+              className="btn btn-primary"
+              style={{ padding: '0.6rem 1.25rem' }}
+            >
+              <Plus size={18} />
+              <span>Add New Secret</span>
+            </button>
+          </div>
+
+          {visibleSecrets.length === 0 ? (
             <div style={{ 
               textAlign: 'center', 
               padding: '4rem 1rem', 
@@ -369,235 +921,863 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
               border: '1px dashed var(--glass-border)',
               borderRadius: 'var(--border-radius-sm)'
             }}>
-              <Key size={48} style={{ opacity: 0.3, marginBottom: '1rem', transform: 'rotate(-45deg)' }} />
-              <p style={{ fontSize: '1rem', fontWeight: 500 }}>No keys created yet.</p>
-              <p style={{ fontSize: '0.85rem' }}>Use the generator above to create your first encrypted API secret.</p>
+              <FolderOpen size={48} style={{ opacity: 0.3, marginBottom: '1rem' }} />
+              <p style={{ fontSize: '1rem', fontWeight: 500 }}>No secrets created yet.</p>
+              <p style={{ fontSize: '0.85rem' }}>Click "Add New Secret" above to start populating your encrypted vault.</p>
             </div>
           ) : (
-            <div className="table-container">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Identifier Prefix</th>
-                    <th>Created At</th>
-                    <th>Last Revealed</th>
-                    <th style={{ textAlign: 'right' }}>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {secrets.map((sec) => (
-                    <tr key={sec.id}>
-                      <td style={{ fontWeight: 600 }}>{sec.name}</td>
-                      <td>
-                        <span className="badge badge-code">{sec.prefix}...</span>
-                      </td>
-                      <td>
-                        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                          <Calendar size={14} style={{ color: 'var(--text-muted)' }} />
-                          {formatDate(sec.created_at)}
-                        </span>
-                      </td>
-                      <td>
-                        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                          <Clock size={14} style={{ color: 'var(--text-muted)' }} />
-                          {sec.last_used_at ? formatDate(sec.last_used_at) : 'Never'}
-                        </span>
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <div style={{ display: 'inline-flex', gap: '0.5rem', alignItems: 'center' }}>
-                          
-                          {/* Reveal Button */}
-                          <button
-                            onClick={() => handleRevealSecret(sec.id, sec.name)}
-                            disabled={loadingSecretId !== null}
-                            className="btn btn-secondary"
-                            title="Decrypt & Reveal Secret"
-                            style={{ padding: '0.4rem 0.6rem' }}
-                          >
-                            {loadingSecretId === sec.id ? (
-                              <Loader2 size={15} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
-                            ) : (
-                              <Eye size={15} />
-                            )}
-                          </button>
-
-                          {/* Quick Copy Button */}
-                          <button
-                            onClick={() => handleFetchAndCopy(sec.id)}
-                            disabled={loadingSecretId !== null}
-                            className="btn btn-secondary"
-                            title="Fetch plaintext & Copy"
-                            style={{ 
-                              padding: '0.4rem 0.6rem',
-                              borderColor: copiedId === sec.id ? 'var(--success)' : 'var(--glass-border)',
-                              background: copiedId === sec.id ? 'var(--success-glow)' : 'rgba(255, 255, 255, 0.05)',
-                              color: copiedId === sec.id ? 'var(--success)' : 'inherit'
-                            }}
-                          >
-                            {loadingSecretId === sec.id ? (
-                              <Loader2 size={15} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
-                            ) : copiedId === sec.id ? (
-                              <Check size={15} />
-                            ) : (
-                              <Copy size={15} />
-                            )}
-                          </button>
-
-                          {/* Delete Button */}
-                          <button
-                            onClick={() => setDeleteTarget(sec)}
-                            className="btn btn-danger"
-                            title="Delete Key"
-                            style={{ padding: '0.4rem 0.6rem' }}
-                          >
-                            <Trash2 size={15} />
-                          </button>
-
-                        </div>
-                      </td>
+            <>
+              {/* Desktop Table View */}
+              <div className="table-container">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Category</th>
+                      <th>Identifier Prefix</th>
+                      <th>Created At</th>
+                      <th>Last Revealed</th>
+                      <th style={{ textAlign: 'right' }}>Actions</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {visibleSecrets.map((sec) => (
+                      <tr key={sec.id}>
+                        <td style={{ fontWeight: 600 }}>{sec.name}</td>
+                        <td>
+                          <span className="badge" style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid var(--glass-border)' }}>
+                            {sec.category}
+                          </span>
+                        </td>
+                        <td>
+                          <span className="badge badge-code">{sec.prefix}****</span>
+                        </td>
+                        <td style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <Calendar size={14} />
+                            {new Date(sec.created_at).toLocaleDateString()}
+                          </div>
+                        </td>
+                        <td style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                          {sec.last_used_at ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                              <Clock size={14} />
+                              {new Date(sec.last_used_at).toLocaleDateString()}
+                            </div>
+                          ) : (
+                            <span style={{ opacity: 0.5 }}>Never used</span>
+                          )}
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                            {/* Reveal Button */}
+                            <button
+                              onClick={() => handleRevealSecret(sec.id, sec.name)}
+                              disabled={loadingSecretId !== null}
+                              className="btn btn-secondary"
+                              style={{ padding: '0.4rem 0.6rem' }}
+                              title="Decrypt & Reveal Secret"
+                            >
+                              {loadingSecretId === sec.id ? <Loader2 size={15} className="animate-spin" /> : <Eye size={15} />}
+                            </button>
+                            
+                            {/* Quick Copy Button */}
+                            <button
+                              onClick={() => handleFetchAndCopy(sec.id)}
+                              disabled={loadingSecretId !== null}
+                              className="btn btn-secondary"
+                              title="Fetch plaintext & Copy"
+                              style={{ 
+                                padding: '0.4rem 0.6rem',
+                                borderColor: copiedId === sec.id ? 'var(--success)' : 'var(--glass-border)',
+                                background: copiedId === sec.id ? 'var(--success-glow)' : 'transparent',
+                                color: copiedId === sec.id ? 'var(--success)' : 'inherit'
+                              }}
+                            >
+                              {copiedId === sec.id ? <Check size={15} /> : <Copy size={15} />}
+                            </button>
+
+                            {/* Edit Button */}
+                            <button
+                              onClick={() => handleStartEditSecret(sec)}
+                              disabled={loadingSecretId !== null}
+                              className="btn btn-secondary"
+                              title="Edit Secret"
+                              style={{ padding: '0.4rem 0.6rem' }}
+                            >
+                              <Pencil size={15} />
+                            </button>
+
+                            {/* Delete Button */}
+                            <button
+                              onClick={() => setDeleteTarget(sec)}
+                              className="btn btn-danger"
+                              title="Delete Key"
+                              style={{ padding: '0.4rem 0.6rem' }}
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Mobile Card List */}
+              <div className="secret-card-list">
+                {visibleSecrets.map((sec) => (
+                  <div key={`mob-${sec.id}`} className="secret-card-item">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div className="stack" style={{ gap: '0.25rem' }}>
+                        <div style={{ fontWeight: 600, fontSize: '1.05rem' }}>{sec.name}</div>
+                        <div className="row" style={{ gap: '0.5rem' }}>
+                          <span className="badge" style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid var(--glass-border)' }}>{sec.category}</span>
+                          <span className="badge badge-code" style={{ fontSize: '0.7rem' }}>{sec.prefix}****</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="row" style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', justifyContent: 'space-between', borderTop: '1px solid var(--glass-border)', paddingTop: '0.75rem' }}>
+                      <div className="row" style={{ gap: '0.4rem' }}><Calendar size={14} /> {new Date(sec.created_at).toLocaleDateString()}</div>
+                      <div className="row" style={{ gap: '0.5rem' }}>
+                        <button onClick={() => handleRevealSecret(sec.id, sec.name)} disabled={loadingSecretId !== null} className="btn btn-secondary" style={{ padding: '0.4rem' }}>
+                           {loadingSecretId === sec.id ? <Loader2 size={16} className="animate-spin" /> : <Eye size={16} />}
+                        </button>
+                        <button onClick={() => handleFetchAndCopy(sec.id)} disabled={loadingSecretId !== null} className="btn btn-secondary" style={{ padding: '0.4rem', color: copiedId === sec.id ? 'var(--success)' : 'inherit' }}>
+                           {copiedId === sec.id ? <Check size={16} /> : <Copy size={16} />}
+                        </button>
+                        <button onClick={() => handleStartEditSecret(sec)} disabled={loadingSecretId !== null} className="btn btn-secondary" style={{ padding: '0.4rem' }}><Pencil size={16} /></button>
+                        <button onClick={() => setDeleteTarget(sec)} className="btn btn-danger" style={{ padding: '0.4rem' }}><Trash2 size={16} /></button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </div>
       </main>
 
       {/* MODALS */}
 
-      {/* 1. Newly Generated Key Modal (Show Once Notice) */}
+      {/* 1. Add Secret Modal */}
+      {isAddModalOpen && (
+        <div className="modal-overlay">
+          <div className="modal-content" style={{ maxWidth: '540px' }}>
+
+            {/* ── Header ── */}
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <div style={{
+                    width: '36px', height: '36px', borderRadius: '10px',
+                    background: 'var(--accent-gradient)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    boxShadow: '0 0 14px rgba(6,182,212,0.3)'
+                  }}>
+                    <Plus size={18} color="#fff" />
+                  </div>
+                  <div>
+                    <h3 style={{ fontSize: '1.15rem', margin: 0 }}>Add New Secret</h3>
+                    <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.3 }}>
+                      Encrypted locally · Zero-knowledge
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setIsAddModalOpen(false); setNewName(''); setCustomSecretValue(''); setErrorMsg(null); }}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.25rem', borderRadius: '6px', lineHeight: 1 }}
+                >
+                  <span style={{ fontSize: '1.25rem' }}>✕</span>
+                </button>
+              </div>
+            </div>
+
+            {/* ── Scrollable Body ── */}
+            <form onSubmit={handleCreateSecret} style={{ display: 'contents' }}>
+              <div className="modal-body">
+
+                {errorMsg && (
+                  <div style={{
+                    padding: '0.65rem 0.85rem', marginBottom: '1.25rem',
+                    background: 'var(--danger-glow)', border: '1px solid rgba(244,63,94,0.25)',
+                    borderRadius: '8px', color: 'var(--danger)', fontSize: '0.83rem',
+                    display: 'flex', alignItems: 'center', gap: '0.5rem'
+                  }}>
+                    <ShieldAlert size={14} /><span>{errorMsg}</span>
+                  </div>
+                )}
+
+                {/* Secret name */}
+                <div className="form-group">
+                  <label htmlFor="key-name" className="form-label">Name / Description</label>
+                  <input
+                    id="key-name" type="text"
+                    placeholder="e.g. Stripe API Key, Personal Visa, DB Password"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    className="form-input" maxLength={80} required
+                  />
+                </div>
+
+                {/* ── Category picker grid ── */}
+                <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+                  <label className="form-label">Category</label>
+                  <div className="category-grid">
+                    {[
+                      { id: 'API Key',           icon: <Key size={20} />, label: 'API Key' },
+                      { id: 'Auth Secret',        icon: <Lock size={20} />, label: 'Auth Secret' },
+                      { id: 'Password',           icon: <ShieldCheck size={20} />, label: 'Password' },
+                      { id: 'Secure Note',        icon: <FileText size={20} />, label: 'Secure Note' },
+                      { id: 'SSH Key',            icon: <Terminal size={20} />, label: 'SSH Key' },
+                      { id: 'Software License',   icon: <FileBadge size={20} />, label: 'SW License' },
+                      { id: 'Crypto Seed Phrase', icon: <Bitcoin size={20} />, label: 'Crypto Seed' },
+                      { id: 'Credit Card',        icon: <CreditCard size={20} />, label: 'Credit Card' },
+                      { id: 'Bank Account',       icon: <Landmark size={20} />, label: 'Bank Account' },
+                    ].map(cat => (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        className={`category-card${newCategory === cat.id ? ' selected' : ''}`}
+                        onClick={() => { setNewCategory(cat.id); setErrorMsg(null); }}
+                        style={{
+                          borderLeftWidth: newCategory === cat.id ? '4px' : '1.5px',
+                          borderLeftColor: newCategory === cat.id ? 'var(--accent-cyan)' : 'var(--glass-border)'
+                        }}
+                      >
+                        <span className="cat-icon" style={{ display: 'flex', alignItems: 'center' }}>{cat.icon}</span>
+                        <span>{cat.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* ── Mode tabs (generate vs custom) ── only for key-like types */}
+                {['API Key', 'Auth Secret', 'Password'].includes(newCategory) && (
+                  <div className="form-group">
+                    <label className="form-label">Secret Mode</label>
+                    <div className="mode-tabs" style={{ position: 'relative' }}>
+                      <div style={{
+                        position: 'absolute',
+                        top: '3px',
+                        bottom: '3px',
+                        left: creationMode === 'generate' ? '3px' : 'calc(50% + 1px)',
+                        width: 'calc(50% - 4px)',
+                        background: 'rgba(255,255,255,0.09)',
+                        borderRadius: '6px',
+                        transition: 'left 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+                        zIndex: 0,
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.3)'
+                      }} />
+                      <button type="button" className="mode-tab" style={{ zIndex: 1, color: creationMode === 'generate' ? 'var(--text-primary)' : 'var(--text-muted)' }}
+                        onClick={() => setCreationMode('generate')}>
+                        ⚡ Auto-Generate
+                      </button>
+                      <button type="button" className="mode-tab" style={{ zIndex: 1, color: creationMode === 'custom' ? 'var(--text-primary)' : 'var(--text-muted)' }}
+                        onClick={() => setCreationMode('custom')}>
+                        ✏️ Enter Manually
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Credit Card widget + fields ── */}
+                {newCategory === 'Credit Card' && (
+                  <>
+                    {/* Visual card preview */}
+                    <div className="cc-widget">
+                      <div className="cc-chip" />
+                      <div className="cc-number-display" style={{ fontSize: '1.3rem' }}>
+                        {ccNumber
+                          ? ccNumber.replace(/(.{4})/g, '$1 ').trim()
+                          : '•••• •••• •••• ••••'}
+                      </div>
+                      <div className="cc-bottom">
+                        <div style={{ flex: 1, overflow: 'hidden' }}>
+                          <div className="cc-label">Cardholder</div>
+                          <div className="cc-value" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: '1rem' }}>{ccCardholder || 'FULL NAME'}</div>
+                        </div>
+                        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                          <div className="cc-label">Expires</div>
+                          <div className="cc-value">{ccExpiry || 'MM/YY'}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Input fields */}
+                    <div className="cc-fields">
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Cardholder Name</label>
+                        <input type="text" placeholder="Full name on card"
+                          value={ccCardholder} onChange={(e) => setCcCardholder(e.target.value)}
+                          className="form-input" required />
+                      </div>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Card Number</label>
+                        <input type="text" placeholder="0000 0000 0000 0000"
+                          value={ccNumber}
+                          onChange={(e) => setCcNumber(e.target.value.replace(/[^\d\s]/g, '').slice(0, 19))}
+                          className="form-input" style={{ fontFamily: 'var(--font-mono)', letterSpacing: '0.1em' }} required />
+                      </div>
+                      <div className="field-row">
+                        <div className="form-group" style={{ marginBottom: 0 }}>
+                          <label className="form-label">Expiry Date</label>
+                          <input type="text" placeholder="MM/YY"
+                            value={ccExpiry} onChange={(e) => setCcExpiry(e.target.value)}
+                            className="form-input" required />
+                        </div>
+                        <div className="form-group" style={{ marginBottom: 0 }}>
+                          <label className="form-label">CVV</label>
+                          <input type="password" placeholder="•••"
+                            value={ccCvv} onChange={(e) => setCcCvv(e.target.value)}
+                            className="form-input" maxLength={4} required />
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* ── Bank Account fields ── */}
+                {newCategory === 'Bank Account' && (
+                  <div style={{ background: 'rgba(0,0,0,0.15)', borderRadius: '12px', border: '1px solid var(--glass-border)', padding: '1.1rem' }}>
+                    <div className="cc-fields">
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Account Holder Name</label>
+                        <input type="text" placeholder="Full legal name"
+                          value={baHolder} onChange={(e) => setBaHolder(e.target.value)}
+                          className="form-input" required />
+                      </div>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Bank Name</label>
+                        <input type="text" placeholder="e.g. Chase Bank"
+                          value={baBankName} onChange={(e) => setBaBankName(e.target.value)}
+                          className="form-input" required />
+                      </div>
+                      <div className="field-row">
+                        <div className="form-group" style={{ marginBottom: 0 }}>
+                          <label className="form-label">Account Number</label>
+                          <input type="text" placeholder="Account #"
+                            value={baNumber} onChange={(e) => setBaNumber(e.target.value)}
+                            className="form-input" required />
+                        </div>
+                        <div className="form-group" style={{ marginBottom: 0 }}>
+                          <label className="form-label">Routing Number <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>(Optional)</span></label>
+                          <input type="text" placeholder="Routing #"
+                            value={baRouting} onChange={(e) => setBaRouting(e.target.value)}
+                            className="form-input" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Multiline textarea (SSH / Note / Seed) ── */}
+                {['Secure Note', 'SSH Key', 'Crypto Seed Phrase'].includes(newCategory) && (
+                  <div className="form-group">
+                    <label htmlFor="custom-secret" className="form-label">
+                      {newCategory === 'Secure Note' ? 'Note Content' : newCategory === 'SSH Key' ? 'Private Key Block' : 'Seed Phrase (12 or 24 words)'}
+                    </label>
+                    <textarea
+                      id="custom-secret" rows={5}
+                      placeholder={newCategory === 'Crypto Seed Phrase' ? 'word1 word2 word3 ...' : `Paste your ${newCategory} here`}
+                      value={customSecretValue} onChange={(e) => setCustomSecretValue(e.target.value)}
+                      className="form-input"
+                      style={{ resize: 'vertical', fontFamily: newCategory !== 'Secure Note' ? 'var(--font-mono)' : 'inherit', fontSize: '0.88rem' }}
+                      required
+                    />
+                  </div>
+                )}
+
+                {/* ── Software License ── */}
+                {newCategory === 'Software License' && (
+                  <div className="form-group">
+                    <label htmlFor="custom-secret" className="form-label">License Key / Serial</label>
+                    <input id="custom-secret" type="text" placeholder="XXXX-XXXX-XXXX-XXXX"
+                      value={customSecretValue} onChange={(e) => setCustomSecretValue(e.target.value)}
+                      className="form-input" style={{ fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }} required />
+                  </div>
+                )}
+
+                {/* ── Manual secret value (custom mode only) ── */}
+                {['API Key', 'Auth Secret', 'Password'].includes(newCategory) && creationMode === 'custom' && (
+                  <div className="form-group">
+                    <label htmlFor="custom-secret" className="form-label">Secret Value</label>
+                    <input id="custom-secret" type="password" placeholder="Paste your secret here"
+                      value={customSecretValue} onChange={(e) => setCustomSecretValue(e.target.value)}
+                      className="form-input" required />
+                  </div>
+                )}
+
+                {/* Auto-generate info banner */}
+                {['API Key', 'Auth Secret', 'Password'].includes(newCategory) && creationMode === 'generate' && (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '0.6rem',
+                    padding: '0.75rem 1rem', borderRadius: '8px',
+                    background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.2)',
+                    fontSize: '0.82rem', color: 'var(--success)'
+                  }}>
+                    <ShieldCheck size={16} />
+                    <span>A cryptographically secure random value will be generated and shown once after saving.</span>
+                  </div>
+                )}
+
+              </div>
+
+              {/* ── Footer ── */}
+              <div className="modal-footer">
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
+                  <button type="button"
+                    onClick={() => { setIsAddModalOpen(false); setNewName(''); setCustomSecretValue(''); setErrorMsg(null); }}
+                    className="btn btn-secondary" style={{ flex: 1 }}>
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={isGenerating || !newName.trim()}
+                    className="btn btn-primary" style={{ flex: 2 }}>
+                    {isGenerating ? (
+                      <><Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /><span>Encrypting…</span></>
+                    ) : (
+                      <><Lock size={15} /><span>Encrypt & Save</span></>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </form>
+
+          </div>
+        </div>
+      )}
+
+      {/* 2. Edit Secret Modal */}
+      {editingSecret && (
+        <div className="modal-overlay">
+          <div className="modal-content" style={{ maxWidth: 'var(--modal-max-w)' }}>
+            
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <div style={{
+                    width: '36px', height: '36px', borderRadius: '10px',
+                    background: 'rgba(6,182,212,0.15)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    border: '1px solid rgba(6,182,212,0.3)',
+                    boxShadow: '0 0 14px rgba(6,182,212,0.2)'
+                  }}>
+                    <Pencil size={18} color="var(--accent-cyan)" />
+                  </div>
+                  <div>
+                    <h3 style={{ fontSize: '1.15rem', margin: 0 }}>Edit Secret</h3>
+                    <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.3 }}>
+                      Encrypted locally · Zero-knowledge
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingSecret(null)}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.25rem', borderRadius: '6px', lineHeight: 1 }}
+                >
+                  <span style={{ fontSize: '1.25rem' }}>✕</span>
+                </button>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveEditSecret} style={{ display: 'contents' }}>
+              <div className="modal-body">
+                {editError && (
+                  <div style={{
+                    padding: '0.65rem 0.85rem', marginBottom: '1.25rem',
+                    background: 'var(--danger-glow)', border: '1px solid rgba(244,63,94,0.25)',
+                    borderRadius: '8px', color: 'var(--danger)', fontSize: '0.83rem',
+                    display: 'flex', alignItems: 'center', gap: '0.5rem'
+                  }}>
+                    <ShieldAlert size={14} /><span>{editError}</span>
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label htmlFor="edit-name" className="form-label">Secret Description Name</label>
+                  <input
+                    id="edit-name" type="text" value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="form-input" maxLength={80} required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Category</label>
+                  <div>
+                    <span className="badge" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--glass-border)', padding: '0.4rem 0.75rem', fontSize: '0.85rem' }}>
+                      {editCategory}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Edit Category: Credit Card */}
+                {editCategory === 'Credit Card' && (
+                  <div className="cc-fields" style={{ marginTop: '0.5rem' }}>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">Cardholder Name</label>
+                      <input type="text" value={editCcCardholder} onChange={(e) => setEditCcCardholder(e.target.value)} className="form-input" required />
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">Card Number</label>
+                      <input type="text" value={editCcNumber} onChange={(e) => setEditCcNumber(e.target.value.replace(/[^\d\s]/g, '').slice(0, 19))} className="form-input" style={{ fontFamily: 'var(--font-mono)' }} required />
+                    </div>
+                    <div className="field-row">
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Expiry Date</label>
+                        <input type="text" value={editCcExpiry} onChange={(e) => setEditCcExpiry(e.target.value)} className="form-input" required />
+                      </div>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">CVV</label>
+                        <input type="password" value={editCcCvv} onChange={(e) => setEditCcCvv(e.target.value)} className="form-input" maxLength={4} required />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Edit Category: Bank Account */}
+                {editCategory === 'Bank Account' && (
+                  <div className="cc-fields" style={{ marginTop: '0.5rem' }}>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">Account Holder Name</label>
+                      <input type="text" value={editBaHolder} onChange={(e) => setEditBaHolder(e.target.value)} className="form-input" required />
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">Bank Name</label>
+                      <input type="text" value={editBaBankName} onChange={(e) => setEditBaBankName(e.target.value)} className="form-input" required />
+                    </div>
+                    <div className="field-row">
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Account Number</label>
+                        <input type="text" value={editBaNumber} onChange={(e) => setEditBaNumber(e.target.value)} className="form-input" required />
+                      </div>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Routing Number <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>(Optional)</span></label>
+                        <input type="text" value={editBaRouting} onChange={(e) => setEditBaRouting(e.target.value)} className="form-input" />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Edit Category: Secure Note / SSH Key / Crypto Seed Phrase (Multiline textareas) */}
+                {['Secure Note', 'SSH Key', 'Crypto Seed Phrase'].includes(editCategory) && (
+                  <div className="form-group">
+                    <label htmlFor="edit-value" className="form-label">Content</label>
+                    <textarea id="edit-value" rows={6} value={editSecretValue} onChange={(e) => setEditSecretValue(e.target.value)} className="form-input" style={{ resize: 'vertical', fontFamily: editCategory !== 'Secure Note' ? 'var(--font-mono)' : 'inherit' }} required />
+                  </div>
+                )}
+
+                {/* Edit Category: Software License, API Key, Auth Secret, Password (Single Input fields) */}
+                {!['Credit Card', 'Bank Account', 'Secure Note', 'SSH Key', 'Crypto Seed Phrase'].includes(editCategory) && (
+                  <div className="form-group" style={{ position: 'relative' }}>
+                    <label htmlFor="edit-value" className="form-label">Secret Value</label>
+                    <div style={{ display: 'flex', alignItems: 'center', position: 'relative' }}>
+                      <input id="edit-value" type={showEditPlaintext ? 'text' : 'password'} value={editSecretValue} onChange={(e) => setEditSecretValue(e.target.value)} className="form-input" style={{ width: '100%', paddingRight: '3rem', fontFamily: 'var(--font-mono)' }} required />
+                      <button type="button" onClick={() => setShowEditPlaintext(!showEditPlaintext)} className="btn" style={{ position: 'absolute', right: '0.25rem', background: 'transparent', border: 'none', padding: '0.5rem', color: 'var(--text-secondary)' }}>
+                        {showEditPlaintext ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="modal-footer" style={{ display: 'flex', gap: '1rem' }}>
+                <button type="button" onClick={() => setEditingSecret(null)} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
+                <button type="submit" disabled={isSavingEdit || !editName.trim()} className="btn btn-primary" style={{ flex: 1 }}>
+                  {isSavingEdit ? <><Loader2 size={16} className="animate-spin" /><span>Saving...</span></> : <span>Save Changes</span>}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 3. Newly Generated Key Modal (Show Once Notice) */}
       {newlyGeneratedKey && (
         <div className="modal-overlay">
-          <div className="modal-content">
-            <h3 style={{ fontSize: '1.4rem', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Lock style={{ color: 'var(--success)' }} />
-              <span>Key Generated Successfully</span>
-            </h3>
+          <div className="modal-content" style={{ maxWidth: 'var(--modal-max-w)' }}>
             
-            <p style={{ fontSize: '0.9rem', marginBottom: '1.25rem' }}>
-              Here is your secure API key for <strong>{newlyGeneratedName}</strong>. You can copy it now, or retrieve it from DevVault later.
-            </p>
-
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '0.85rem 1rem',
-              background: 'rgba(0, 0, 0, 0.3)',
-              border: '1px solid var(--glass-border)',
-              borderRadius: 'var(--border-radius-sm)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: '0.9rem',
-              color: 'var(--accent-cyan)',
-              wordBreak: 'break-all',
-              gap: '0.5rem',
-              marginBottom: '1.5rem'
-            }}>
-              <span>{newlyGeneratedKey}</span>
-              <button
-                onClick={() => copyToClipboard(newlyGeneratedKey, 'gen-modal')}
-                className="btn btn-secondary"
-                style={{ 
-                  padding: '0.4rem', 
-                  flexShrink: 0,
-                  borderColor: copiedId === 'gen-modal' ? 'var(--success)' : 'var(--glass-border)',
-                  background: copiedId === 'gen-modal' ? 'var(--success-glow)' : 'transparent',
-                  color: copiedId === 'gen-modal' ? 'var(--success)' : 'inherit'
-                }}
-              >
-                {copiedId === 'gen-modal' ? <Check size={16} /> : <Copy size={16} />}
-              </button>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <div style={{
+                    width: '36px', height: '36px', borderRadius: '10px',
+                    background: 'rgba(6,182,212,0.15)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    border: '1px solid rgba(6,182,212,0.3)',
+                    boxShadow: '0 0 14px rgba(6,182,212,0.2)'
+                  }}>
+                    <Lock size={18} color="var(--accent-cyan)" />
+                  </div>
+                  <div>
+                    <h3 style={{ fontSize: '1.15rem', margin: 0 }}>Key Generated</h3>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <button
-              onClick={() => {
-                setNewlyGeneratedKey(null);
-                setNewlyGeneratedName('');
-              }}
-              className="btn btn-primary"
-              style={{ width: '100%' }}
-            >
-              Close and Open Dashboard
-            </button>
+            <div className="modal-body">
+              <p style={{ fontSize: '0.9rem', marginBottom: '1.25rem', color: 'var(--text-secondary)' }}>
+                Here is your secure API key for <span className="badge">{newlyGeneratedName}</span>. Since it was encrypted client-side, make sure to copy it now.
+              </p>
+
+              <div className="secret-value-box" style={{ 
+                borderColor: 'rgba(6,182,212,0.3)', 
+                background: 'rgba(6,182,212,0.08)',
+                color: 'var(--accent-cyan)'
+              }}>
+                {newlyGeneratedKey}
+                <button
+                  onClick={() => copyToClipboard(newlyGeneratedKey, 'gen-modal')}
+                  className="btn btn-secondary"
+                  style={{
+                    position: 'absolute',
+                    top: '0.5rem',
+                    right: '0.5rem',
+                    padding: '0.35rem',
+                    background: 'var(--bg-secondary)',
+                    borderColor: copiedId === 'gen-modal' ? 'var(--success)' : 'var(--glass-border)',
+                    color: copiedId === 'gen-modal' ? 'var(--success)' : 'inherit'
+                  }}
+                >
+                  {copiedId === 'gen-modal' ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+              </div>
+
+              <div style={{ 
+                marginTop: '1.25rem', 
+                padding: '0.75rem', 
+                background: 'rgba(245, 158, 11, 0.1)', 
+                border: '1px solid rgba(245, 158, 11, 0.2)', 
+                borderRadius: 'var(--border-radius-sm)', 
+                color: 'var(--warning)', 
+                fontSize: '0.85rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}>
+                <ShieldAlert size={16} />
+                <span>Copy this key now. You will not be able to see it again.</span>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button
+                onClick={() => {
+                  setNewlyGeneratedKey(null);
+                  setNewlyGeneratedName('');
+                }}
+                className="btn btn-primary"
+                style={{ width: '100%' }}
+              >
+                Got it — Close
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      {/* 2. Revealed Secret Modal */}
+      {/* 4. Revealed Secret Modal (Custom render for Credit Card and Bank Accounts) */}
       {revealedKey && (
         <div className="modal-overlay">
-          <div className="modal-content" style={{ borderTop: '4px solid var(--accent-purple)' }}>
-            <h3 style={{ fontSize: '1.4rem', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Eye style={{ color: 'var(--accent-purple)' }} />
-              <span>Decrypted Secret Value</span>
-            </h3>
+          <div className="modal-content" style={{ maxWidth: 'var(--modal-max-w)' }}>
             
-            <p style={{ fontSize: '0.9rem', marginBottom: '1.25rem' }}>
-              Plaintext secret decrypted for key: <strong>{revealedName}</strong>. Keep this window private.
-            </p>
-
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '0.85rem 1rem',
-              background: 'rgba(0, 0, 0, 0.3)',
-              border: '1px solid var(--glass-border)',
-              borderRadius: 'var(--border-radius-sm)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: '0.9rem',
-              color: 'var(--accent-purple)',
-              wordBreak: 'break-all',
-              gap: '0.5rem',
-              marginBottom: '1.5rem'
-            }}>
-              <span>{revealedKey}</span>
-              <button
-                onClick={() => copyToClipboard(revealedKey, 'rev-modal')}
-                className="btn btn-secondary"
-                style={{ 
-                  padding: '0.4rem', 
-                  flexShrink: 0,
-                  borderColor: copiedId === 'rev-modal' ? 'var(--success)' : 'var(--glass-border)',
-                  background: copiedId === 'rev-modal' ? 'var(--success-glow)' : 'transparent',
-                  color: copiedId === 'rev-modal' ? 'var(--success)' : 'inherit'
-                }}
-              >
-                {copiedId === 'rev-modal' ? <Check size={16} /> : <Copy size={16} />}
-              </button>
+            {/* Header */}
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <div style={{
+                    width: '36px', height: '36px', borderRadius: '10px',
+                    background: 'rgba(168,85,247,0.15)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    border: '1px solid rgba(168,85,247,0.3)',
+                    boxShadow: '0 0 14px rgba(168,85,247,0.2)'
+                  }}>
+                    <Eye size={18} color="var(--accent-purple)" />
+                  </div>
+                  <div>
+                    <h3 style={{ fontSize: '1.15rem', margin: 0 }}>Decrypt & View</h3>
+                    <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.3 }}>
+                      Plaintext for <span className="badge" style={{ padding: '0.1rem 0.3rem', fontSize: '0.7rem' }}>{revealedName}</span>
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setRevealedKey(null); setRevealedName(''); setRevealedCategory(''); }}
+                  style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.25rem', borderRadius: '6px', lineHeight: 1 }}
+                >
+                  <span style={{ fontSize: '1.25rem' }}>✕</span>
+                </button>
+              </div>
             </div>
 
-            <button
-              onClick={() => {
-                setRevealedKey(null);
-                setRevealedName('');
-              }}
-              className="btn btn-secondary"
-              style={{ width: '100%', background: 'rgba(255,255,255,0.05)' }}
-            >
-              Hide Secret
-            </button>
+            {/* Body */}
+            <div className="modal-body">
+              {revealedCategory === 'Credit Card' ? (() => {
+                let cc = { cardholder: '', number: '', expiry: '', cvv: '' };
+                try { cc = JSON.parse(revealedKey); } catch (e) {}
+                return (
+                  <div className="stack" style={{ background: 'rgba(0,0,0,0.15)', padding: '0.5rem', borderRadius: 'var(--border-radius-sm)', border: '1px solid var(--glass-border)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>CARDHOLDER</span>
+                      <div className="row" style={{ gap: '0.5rem' }}>
+                        <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>{cc.cardholder}</span>
+                        <button onClick={() => copyToClipboard(cc.cardholder, 'rev-cc-name')} className="btn btn-secondary" style={{ padding: '0.25rem', border: 'none', background: 'transparent' }}>
+                          {copiedId === 'rev-cc-name' ? <Check size={14} color="var(--success)" /> : <Copy size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="divider" style={{ margin: 0 }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>CARD NUMBER</span>
+                      <div className="row" style={{ gap: '0.5rem' }}>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: '0.9rem' }}>{cc.number}</span>
+                        <button onClick={() => copyToClipboard(cc.number, 'rev-cc-num')} className="btn btn-secondary" style={{ padding: '0.25rem', border: 'none', background: 'transparent' }}>
+                          {copiedId === 'rev-cc-num' ? <Check size={14} color="var(--success)" /> : <Copy size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="divider" style={{ margin: 0 }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>EXPIRY</span>
+                      <div className="row" style={{ gap: '0.5rem' }}>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.9rem' }}>{cc.expiry}</span>
+                        <button onClick={() => copyToClipboard(cc.expiry, 'rev-cc-exp')} className="btn btn-secondary" style={{ padding: '0.25rem', border: 'none', background: 'transparent' }}>
+                          {copiedId === 'rev-cc-exp' ? <Check size={14} color="var(--success)" /> : <Copy size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="divider" style={{ margin: 0 }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>CVV</span>
+                      <div className="row" style={{ gap: '0.5rem' }}>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.9rem' }}>{cc.cvv}</span>
+                        <button onClick={() => copyToClipboard(cc.cvv, 'rev-cc-cvv')} className="btn btn-secondary" style={{ padding: '0.25rem', border: 'none', background: 'transparent' }}>
+                          {copiedId === 'rev-cc-cvv' ? <Check size={14} color="var(--success)" /> : <Copy size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })() : revealedCategory === 'Bank Account' ? (() => {
+                let ba = { holder: '', bankName: '', accountNumber: '', routingNumber: '' };
+                try { ba = JSON.parse(revealedKey); } catch (e) {}
+                return (
+                  <div className="stack" style={{ background: 'rgba(0,0,0,0.15)', padding: '0.5rem', borderRadius: 'var(--border-radius-sm)', border: '1px solid var(--glass-border)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>ACCOUNT HOLDER</span>
+                      <div className="row" style={{ gap: '0.5rem' }}>
+                        <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>{ba.holder}</span>
+                        <button onClick={() => copyToClipboard(ba.holder, 'rev-ba-holder')} className="btn btn-secondary" style={{ padding: '0.25rem', border: 'none', background: 'transparent' }}>
+                          {copiedId === 'rev-ba-holder' ? <Check size={14} color="var(--success)" /> : <Copy size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="divider" style={{ margin: 0 }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>BANK NAME</span>
+                      <div className="row" style={{ gap: '0.5rem' }}>
+                        <span style={{ fontSize: '0.9rem' }}>{ba.bankName}</span>
+                        <button onClick={() => copyToClipboard(ba.bankName, 'rev-ba-bank')} className="btn btn-secondary" style={{ padding: '0.25rem', border: 'none', background: 'transparent' }}>
+                          {copiedId === 'rev-ba-bank' ? <Check size={14} color="var(--success)" /> : <Copy size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="divider" style={{ margin: 0 }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>ACCOUNT NUMBER</span>
+                      <div className="row" style={{ gap: '0.5rem' }}>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: '0.9rem' }}>{ba.accountNumber}</span>
+                        <button onClick={() => copyToClipboard(ba.accountNumber, 'rev-ba-num')} className="btn btn-secondary" style={{ padding: '0.25rem', border: 'none', background: 'transparent' }}>
+                          {copiedId === 'rev-ba-num' ? <Check size={14} color="var(--success)" /> : <Copy size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="divider" style={{ margin: 0 }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.5rem' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>ROUTING NUMBER</span>
+                      <div className="row" style={{ gap: '0.5rem' }}>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.9rem' }}>{ba.routingNumber}</span>
+                        <button onClick={() => copyToClipboard(ba.routingNumber, 'rev-ba-rout')} className="btn btn-secondary" style={{ padding: '0.25rem', border: 'none', background: 'transparent' }}>
+                          {copiedId === 'rev-ba-rout' ? <Check size={14} color="var(--success)" /> : <Copy size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })() : (
+                /* Regular Secret Box */
+                <div className="secret-value-box">
+                  {revealedKey}
+                  <button
+                    onClick={() => copyToClipboard(revealedKey, 'rev-modal')}
+                    className="btn btn-secondary"
+                    style={{
+                      position: 'absolute',
+                      top: '0.5rem',
+                      right: '0.5rem',
+                      padding: '0.35rem',
+                      background: 'var(--bg-secondary)',
+                      borderColor: copiedId === 'rev-modal' ? 'var(--success)' : 'var(--glass-border)',
+                      color: copiedId === 'rev-modal' ? 'var(--success)' : 'inherit'
+                    }}
+                  >
+                    {copiedId === 'rev-modal' ? <Check size={14} /> : <Copy size={14} />}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="modal-footer">
+              <button
+                onClick={() => { setRevealedKey(null); setRevealedName(''); setRevealedCategory(''); }}
+                className="btn btn-secondary"
+                style={{ width: '100%' }}
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      {/* 3. Delete / Revocation Confirmation Modal */}
+      {/* 5. Delete / Revocation Confirmation Modal */}
       {deleteTarget && (
         <div className="modal-overlay">
-          <div className="modal-content" style={{ borderTop: '4px solid var(--danger)' }}>
-            <h3 style={{ fontSize: '1.4rem', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <ShieldAlert style={{ color: 'var(--danger)' }} />
-              <span>Revoke API Key?</span>
-            </h3>
+          <div className="modal-content">
             
-            <p style={{ fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-              Are you sure you want to permanently revoke and delete the key <strong>{deleteTarget.name}</strong>? 
-              Any clients or applications using this secret will be immediately unauthorized. This action cannot be undone.
-            </p>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <div style={{
+                    width: '36px', height: '36px', borderRadius: '10px',
+                    background: 'rgba(244,63,94,0.15)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    border: '1px solid rgba(244,63,94,0.3)',
+                    boxShadow: '0 0 14px rgba(244,63,94,0.2)'
+                  }}>
+                    <Trash2 size={18} color="var(--danger)" />
+                  </div>
+                  <div>
+                    <h3 style={{ fontSize: '1.15rem', margin: 0 }}>Delete Permanently</h3>
+                  </div>
+                </div>
+              </div>
+            </div>
 
-            <div style={{ display: 'flex', gap: '1rem' }}>
+            <div className="modal-body">
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                Are you sure you want to delete <span className="badge" style={{ color: 'var(--text-primary)' }}>{deleteTarget.name}</span>? 
+                This action cannot be undone. Any clients or applications using this secret will be unauthorized.
+              </p>
+            </div>
+
+            <div className="modal-footer" style={{ display: 'flex', gap: '1rem' }}>
               <button
                 onClick={() => setDeleteTarget(null)}
                 disabled={isDeleting}
@@ -627,8 +1807,9 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
         </div>
       )}
 
-      {/* Spin Animation Definition */}
+      {/* Category styles definition */}
       <style jsx global>{`
+        /* Spin Animation */
         @keyframes spin {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }
@@ -636,8 +1817,41 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
         .animate-spin {
           animation: spin 1s linear infinite;
         }
+
+        /* Category Badge Colors */
+        .badge-api {
+          background: rgba(6, 182, 212, 0.1);
+          border: 1px solid rgba(6, 182, 212, 0.3);
+          color: var(--accent-cyan);
+        }
+        .badge-auth {
+          background: rgba(168, 85, 247, 0.1);
+          border: 1px solid rgba(168, 85, 247, 0.3);
+          color: var(--accent-purple);
+        }
+        .badge-password {
+          background: rgba(245, 158, 11, 0.1);
+          border: 1px solid rgba(245, 158, 11, 0.3);
+          color: var(--warning);
+        }
+        .badge-note {
+          background: rgba(148, 163, 184, 0.1);
+          border: 1px solid rgba(148, 163, 184, 0.3);
+          color: var(--text-secondary);
+        }
+        .badge-finance {
+          background: rgba(244, 63, 94, 0.1);
+          border: 1px solid rgba(244, 63, 94, 0.3);
+          color: var(--danger);
+        }
+        .badge-dev {
+          background: rgba(16, 185, 129, 0.1);
+          border: 1px solid rgba(16, 185, 129, 0.3);
+          color: var(--success);
+        }
       `}</style>
 
     </div>
+    </>
   );
 }

@@ -20,7 +20,7 @@ export default async function HomePage() {
     const adminClient = createAdminClient();
     const { data } = await adminClient
       .from('secrets')
-      .select('id, name, prefix, created_at, last_used_at')
+      .select('id, name, prefix, category, created_at, last_used_at')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
       

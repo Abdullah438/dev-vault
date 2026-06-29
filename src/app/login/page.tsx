@@ -15,7 +15,7 @@ function LoginContent() {
     // Check if redirect callback returned an error query parameter
     const errorParam = searchParams.get('error');
     if (errorParam === 'auth_failed') {
-      setAuthError('Authentication failed. Please try again.');
+      setAuthError(prev => prev ? prev : 'Authentication failed. Please try again.');
     }
   }, [searchParams]);
 
