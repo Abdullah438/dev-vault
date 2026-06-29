@@ -327,6 +327,8 @@ p {
 }
 
 .form-input {
+  width: 100%;
+  display: block;
   background: rgba(8, 11, 17, 0.6);
   border: 1px solid var(--glass-border);
   border-radius: var(--border-radius-sm);
