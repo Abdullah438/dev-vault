@@ -6,8 +6,13 @@ import { createClient } from '@/lib/supabase/client';
 import { Key, Lock, AlertTriangle, ShieldCheck } from 'lucide-react';
 
 function LoginContent() {
-  const [loading, setLoading] = useState<'google' | 'github' | null>(null);
+  const [loading, setLoading] = useState<'google' | 'github' | 'email' | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authSuccess, setAuthSuccess] = useState<string | null>(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
   const searchParams = useSearchParams();
   const supabase = createClient();
 
@@ -23,6 +28,7 @@ function LoginContent() {
     try {
       setLoading(provider);
       setAuthError(null);
+      setAuthSuccess(null);
 
       const { error } = await supabase.auth.signInWithOAuth({
         provider,
@@ -35,6 +41,64 @@ function LoginContent() {
     } catch (err: any) {
       console.error(err);
       setAuthError(err.message || `Could not start ${provider} authentication flow.`);
+      setLoading(null);
+    }
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading('email');
+    setAuthError(null);
+    setAuthSuccess(null);
+
+    try {
+      if (isSignUp) {
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: `${window.location.origin}/auth/callback`,
+          },
+        });
+        if (error) throw error;
+        setAuthSuccess("Success! Please check your email for a confirmation link.");
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (error) throw error;
+        window.location.href = '/'; // Go to dashboard
+      }
+    } catch (err: any) {
+      console.error(err);
+      setAuthError(err.message || 'Authentication failed.');
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email) {
+      setAuthError('Please enter your email address.');
+      return;
+    }
+    setLoading('email');
+    setAuthError(null);
+    setAuthSuccess(null);
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/update-password`,
+      });
+      if (error) throw error;
+      setAuthSuccess("If an account exists, a password reset link has been sent to your email.");
+      setIsResettingPassword(false);
+    } catch (err: any) {
+      console.error(err);
+      setAuthError(err.message || 'Failed to send reset email.');
+    } finally {
       setLoading(null);
     }
   };
@@ -122,6 +186,81 @@ function LoginContent() {
             <span>{authError}</span>
           </div>
         )}
+
+        {authSuccess && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+            padding: '1rem',
+            background: 'rgba(16,185,129,0.07)',
+            border: '1px solid rgba(16,185,129,0.2)',
+            borderRadius: 'var(--border-radius-sm)',
+            color: 'var(--success)',
+            fontSize: '0.875rem',
+            textAlign: 'left',
+            marginBottom: '1.5rem'
+          }}>
+            <ShieldCheck size={18} style={{ flexShrink: 0 }} />
+            <span>{authSuccess}</span>
+          </div>
+        )}
+
+        {isResettingPassword ? (
+          <>
+            <form onSubmit={handleResetPassword} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '1.5rem', textAlign: 'left' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>Email Address</label>
+                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="form-input" placeholder="you@example.com" />
+              </div>
+              <button type="submit" disabled={loading !== null} className="btn btn-primary" style={{ marginTop: '0.5rem', width: '100%', justifyContent: 'center' }}>
+                {loading === 'email' ? 'Please wait...' : 'Send Reset Link'}
+              </button>
+            </form>
+
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>
+              <button type="button" onClick={() => { setIsResettingPassword(false); setAuthError(null); setAuthSuccess(null); }} style={{ background: 'none', border: 'none', color: 'var(--accent-cyan)', cursor: 'pointer', padding: 0 }}>
+                Back to Log In
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <form onSubmit={handleEmailAuth} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '1.5rem', textAlign: 'left' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>Email Address</label>
+                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="form-input" placeholder="you@example.com" />
+              </div>
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Password</label>
+                  {!isSignUp && (
+                    <button type="button" onClick={() => { setIsResettingPassword(true); setAuthError(null); setAuthSuccess(null); }} style={{ background: 'none', border: 'none', color: 'var(--accent-cyan)', cursor: 'pointer', padding: 0, fontSize: '0.75rem' }}>
+                      Forgot?
+                    </button>
+                  )}
+                </div>
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required className="form-input" placeholder="••••••••" />
+              </div>
+              <button type="submit" disabled={loading !== null} className="btn btn-primary" style={{ marginTop: '0.5rem', width: '100%', justifyContent: 'center' }}>
+                {loading === 'email' ? 'Please wait...' : (isSignUp ? 'Sign Up' : 'Log In')}
+              </button>
+            </form>
+
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>
+              {isSignUp ? "Already have an account? " : "Don't have an account? "}
+              <button type="button" onClick={() => { setIsSignUp(!isSignUp); setAuthError(null); setAuthSuccess(null); }} style={{ background: 'none', border: 'none', color: 'var(--accent-cyan)', cursor: 'pointer', padding: 0 }}>
+                {isSignUp ? 'Log In' : 'Sign Up'}
+              </button>
+            </div>
+          </>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
+          <div style={{ flex: 1, height: '1px', background: 'var(--glass-border)' }} />
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>OR</span>
+          <div style={{ flex: 1, height: '1px', background: 'var(--glass-border)' }} />
+        </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           <button

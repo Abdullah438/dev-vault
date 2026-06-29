@@ -8,7 +8,8 @@ import {
   deriveMasterKey, 
   encryptClient, 
   decryptClient, 
-  generateClientSecretValue 
+  generateClientSecretValue,
+  generateCustomPassword
 } from '@/lib/client-crypto';
 import { 
   Key, 
@@ -69,8 +70,15 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [newCategory, setNewCategory] = useState('API Key');
-  const [creationMode, setCreationMode] = useState<'generate' | 'custom'>('generate');
   const [customSecretValue, setCustomSecretValue] = useState('');
+
+  // Generator Options
+  const [pwdLength, setPwdLength] = useState(24);
+  const [pwdUpper, setPwdUpper] = useState(true);
+  const [pwdLower, setPwdLower] = useState(true);
+  const [pwdNumbers, setPwdNumbers] = useState(true);
+  const [pwdSymbols, setPwdSymbols] = useState(true);
+  const [apiKeyPrefix, setApiKeyPrefix] = useState('sec_');
   
   // Credit Card Creation Fields
   const [ccCardholder, setCcCardholder] = useState('');
@@ -93,6 +101,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
   const [editCategory, setEditCategory] = useState('');
   const [editSecretValue, setEditSecretValue] = useState('');
   const [showEditPlaintext, setShowEditPlaintext] = useState(false);
+  const [showNewPlaintext, setShowNewPlaintext] = useState(false);
   
   // Credit Card Edit Fields
   const [editCcCardholder, setEditCcCardholder] = useState('');
@@ -295,12 +304,8 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
       setErrorMsg('Account Number, Holder Name, and Bank Name are required.');
       return;
     }
-    if (['API Key', 'Auth Secret', 'Password'].includes(newCategory) && creationMode === 'custom' && !customSecretValue.trim()) {
+    if (['API Key', 'Auth Secret', 'Password', 'Secure Note', 'SSH Key', 'Crypto Seed Phrase', 'Software License'].includes(newCategory) && !customSecretValue.trim()) {
       setErrorMsg('Secret value cannot be empty.');
-      return;
-    }
-    if (['Secure Note', 'SSH Key', 'Crypto Seed Phrase', 'Software License'].includes(newCategory) && !customSecretValue.trim()) {
-      setErrorMsg('Secret content is required.');
       return;
     }
 
@@ -324,8 +329,6 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
           accountNumber: baNumber.trim(),
           routingNumber: baRouting.trim()
         });
-      } else if (['API Key', 'Auth Secret', 'Password'].includes(newCategory) && creationMode === 'generate') {
-        plaintextSecret = generateClientSecretValue();
       } else {
         plaintextSecret = customSecretValue;
       }
@@ -336,8 +339,8 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
         prefix = 'crd_' + ccNumber.trim().slice(-4); // Last 4 digits of card
       } else if (newCategory === 'Bank Account') {
         prefix = 'bnk_' + baNumber.trim().slice(-4); // Last 4 digits of bank account
-      } else if (newCategory === 'API Key' && creationMode === 'generate') {
-        prefix = plaintextSecret.substring(0, 8);
+      } else if (newCategory === 'API Key') {
+        prefix = plaintextSecret.length >= 8 ? plaintextSecret.substring(0, 8) : 'usr_api_';
       } else {
         prefix = 'usr_' + Math.random().toString(36).substring(2, 6);
       }
@@ -373,8 +376,9 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
       
       setSecrets([newSecretItem, ...secrets]);
       
-      // If it was a randomly generated API Key/Password, show the raw value popup
-      if (['API Key', 'Password'].includes(newCategory) && creationMode === 'generate') {
+      // If they added an API Key or Password, they might want to copy it immediately.
+      // Since it's user-editable before save, we'll still show the popup just in case they clicked Save quickly.
+      if (['API Key', 'Password'].includes(newCategory)) {
         setNewlyGeneratedKey(plaintextSecret);
         setNewlyGeneratedName(data.name);
       }
@@ -383,7 +387,6 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
       setNewName('');
       setCustomSecretValue('');
       setNewCategory('API Key');
-      setCreationMode('generate');
       
       setCcCardholder('');
       setCcNumber('');
@@ -1154,34 +1157,6 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                   </div>
                 </div>
 
-                {/* ── Mode tabs (generate vs custom) ── only for key-like types */}
-                {['API Key', 'Auth Secret', 'Password'].includes(newCategory) && (
-                  <div className="form-group">
-                    <label className="form-label">Secret Mode</label>
-                    <div className="mode-tabs" style={{ position: 'relative' }}>
-                      <div style={{
-                        position: 'absolute',
-                        top: '3px',
-                        bottom: '3px',
-                        left: creationMode === 'generate' ? '3px' : 'calc(50% + 1px)',
-                        width: 'calc(50% - 4px)',
-                        background: 'rgba(255,255,255,0.09)',
-                        borderRadius: '6px',
-                        transition: 'left 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-                        zIndex: 0,
-                        boxShadow: '0 1px 4px rgba(0,0,0,0.3)'
-                      }} />
-                      <button type="button" className="mode-tab" style={{ zIndex: 1, color: creationMode === 'generate' ? 'var(--text-primary)' : 'var(--text-muted)' }}
-                        onClick={() => setCreationMode('generate')}>
-                        ⚡ Auto-Generate
-                      </button>
-                      <button type="button" className="mode-tab" style={{ zIndex: 1, color: creationMode === 'custom' ? 'var(--text-primary)' : 'var(--text-muted)' }}
-                        onClick={() => setCreationMode('custom')}>
-                        ✏️ Enter Manually
-                      </button>
-                    </div>
-                  </div>
-                )}
 
                 {/* ── Credit Card widget + fields ── */}
                 {newCategory === 'Credit Card' && (
@@ -1300,28 +1275,27 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                   </div>
                 )}
 
-                {/* ── Manual secret value (custom mode only) ── */}
-                {['API Key', 'Auth Secret', 'Password'].includes(newCategory) && creationMode === 'custom' && (
+                {/* ── API Key, Auth Secret, Password (Single Input fields) ── */}
+                {['API Key', 'Auth Secret', 'Password'].includes(newCategory) && (
                   <div className="form-group">
-                    <label htmlFor="custom-secret" className="form-label">Secret Value</label>
-                    <input id="custom-secret" type="password" placeholder="Paste your secret here"
-                      value={customSecretValue} onChange={(e) => setCustomSecretValue(e.target.value)}
-                      className="form-input" required />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                      <label htmlFor="custom-secret" className="form-label" style={{ marginBottom: 0 }}>Secret Value</label>
+                      <button type="button" onClick={() => { setCustomSecretValue(newCategory === 'Password' ? generateClientSecretValue(24).replace('sec_', '') : generateClientSecretValue(32)); setShowNewPlaintext(true); }} style={{ background: 'transparent', border: 'none', color: 'var(--accent-cyan)', fontSize: '0.75rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        ⚡ Autogenerate
+                      </button>
+                    </div>
+                    <div style={{ position: 'relative' }}>
+                      <input id="custom-secret" type={showNewPlaintext ? 'text' : 'password'} placeholder="Paste your secret here"
+                        value={customSecretValue} onChange={(e) => setCustomSecretValue(e.target.value)}
+                        className="form-input" style={{ width: '100%', paddingRight: '2.5rem', fontFamily: 'var(--font-mono)' }} required />
+                      <button type="button" onClick={() => setShowNewPlaintext(!showNewPlaintext)} className="btn" style={{ position: 'absolute', right: '0.25rem', top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', padding: '0.5rem', color: 'var(--text-secondary)' }}>
+                        {showNewPlaintext ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
                   </div>
                 )}
 
-                {/* Auto-generate info banner */}
-                {['API Key', 'Auth Secret', 'Password'].includes(newCategory) && creationMode === 'generate' && (
-                  <div style={{
-                    display: 'flex', alignItems: 'center', gap: '0.6rem',
-                    padding: '0.75rem 1rem', borderRadius: '8px',
-                    background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.2)',
-                    fontSize: '0.82rem', color: 'var(--success)'
-                  }}>
-                    <ShieldCheck size={16} />
-                    <span>A cryptographically secure random value will be generated and shown once after saving.</span>
-                  </div>
-                )}
+
 
               </div>
 
@@ -1473,13 +1447,46 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                 {/* Edit Category: Software License, API Key, Auth Secret, Password (Single Input fields) */}
                 {!['Credit Card', 'Bank Account', 'Secure Note', 'SSH Key', 'Crypto Seed Phrase'].includes(editCategory) && (
                   <div className="form-group" style={{ position: 'relative' }}>
-                    <label htmlFor="edit-value" className="form-label">Secret Value</label>
-                    <div style={{ display: 'flex', alignItems: 'center', position: 'relative' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                      <label htmlFor="edit-value" className="form-label" style={{ marginBottom: 0 }}>Secret Value</label>
+                      <button type="button" onClick={() => { 
+                        setEditSecretValue(editCategory === 'Password' 
+                          ? generateCustomPassword(pwdLength, { upper: pwdUpper, lower: pwdLower, numbers: pwdNumbers, symbols: pwdSymbols }) 
+                          : generateClientSecretValue(32, apiKeyPrefix)); 
+                        setShowEditPlaintext(true); 
+                      }} style={{ background: 'transparent', border: 'none', color: 'var(--accent-cyan)', fontSize: '0.75rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        ⚡ Autogenerate
+                      </button>
+                    </div>
+                    <div style={{ position: 'relative', marginBottom: '1rem' }}>
                       <input id="edit-value" type={showEditPlaintext ? 'text' : 'password'} value={editSecretValue} onChange={(e) => setEditSecretValue(e.target.value)} className="form-input" style={{ width: '100%', paddingRight: '3rem', fontFamily: 'var(--font-mono)' }} required />
-                      <button type="button" onClick={() => setShowEditPlaintext(!showEditPlaintext)} className="btn" style={{ position: 'absolute', right: '0.25rem', background: 'transparent', border: 'none', padding: '0.5rem', color: 'var(--text-secondary)' }}>
+                      <button type="button" onClick={() => setShowEditPlaintext(!showEditPlaintext)} className="btn" style={{ position: 'absolute', right: '0.25rem', top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', padding: '0.5rem', color: 'var(--text-secondary)' }}>
                         {showEditPlaintext ? <EyeOff size={18} /> : <Eye size={18} />}
                       </button>
                     </div>
+
+                    {/* Options for Generator */}
+                    {editCategory === 'Password' && (
+                      <div style={{ background: 'rgba(0,0,0,0.1)', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Length: {pwdLength}</span>
+                          <input type="range" min="8" max="64" value={pwdLength} onChange={e => setPwdLength(parseInt(e.target.value))} style={{ width: '120px' }} />
+                        </div>
+                        <div style={{ display: 'flex', gap: '1rem', fontSize: '0.8rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdUpper} onChange={e => setPwdUpper(e.target.checked)} /> A-Z</label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdLower} onChange={e => setPwdLower(e.target.checked)} /> a-z</label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdNumbers} onChange={e => setPwdNumbers(e.target.checked)} /> 0-9</label>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdSymbols} onChange={e => setPwdSymbols(e.target.checked)} /> !@#</label>
+                        </div>
+                      </div>
+                    )}
+
+                    {['API Key', 'Auth Secret'].includes(editCategory) && (
+                      <div style={{ background: 'rgba(0,0,0,0.1)', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--glass-border)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Prefix:</span>
+                        <input type="text" value={apiKeyPrefix} onChange={e => setApiKeyPrefix(e.target.value)} className="form-input" style={{ padding: '0.25rem 0.5rem', height: 'auto', fontSize: '0.8rem' }} />
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1547,21 +1554,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                 </button>
               </div>
 
-              <div style={{ 
-                marginTop: '1.25rem', 
-                padding: '0.75rem', 
-                background: 'rgba(245, 158, 11, 0.1)', 
-                border: '1px solid rgba(245, 158, 11, 0.2)', 
-                borderRadius: 'var(--border-radius-sm)', 
-                color: 'var(--warning)', 
-                fontSize: '0.85rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem'
-              }}>
-                <ShieldAlert size={16} />
-                <span>Copy this key now. You will not be able to see it again.</span>
-              </div>
+
             </div>
 
             <div className="modal-footer">

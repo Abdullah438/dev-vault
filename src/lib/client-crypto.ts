@@ -96,9 +96,9 @@ export async function decryptClient(ciphertextHex: string, ivHex: string, key: C
 }
 
 /**
- * Generates a secure, random client-side API key (prefixed with 'sec_').
+ * Generates a secure, random client-side API key (with optional prefix).
  */
-export function generateClientSecretValue(length: number = 32): string {
+export function generateClientSecretValue(length: number = 32, prefix: string = 'sec_'): string {
   const array = new Uint8Array(length);
   window.crypto.getRandomValues(array);
   
@@ -108,5 +108,32 @@ export function generateClientSecretValue(length: number = 32): string {
     .replace(/\//g, '_')
     .replace(/=+$/, '');
     
-  return 'sec_' + base64.substring(0, length);
+  return prefix + base64.substring(0, length);
+}
+
+/**
+ * Generates a custom password based on user constraints.
+ */
+export function generateCustomPassword(length: number, options: { upper: boolean, lower: boolean, numbers: boolean, symbols: boolean }): string {
+  const upperChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const lowerChars = "abcdefghijklmnopqrstuvwxyz";
+  const numberChars = "0123456789";
+  const symbolChars = "!@#$%^&*()_+-=[]{}|;:,.<>?";
+
+  let charset = "";
+  if (options.upper) charset += upperChars;
+  if (options.lower) charset += lowerChars;
+  if (options.numbers) charset += numberChars;
+  if (options.symbols) charset += symbolChars;
+
+  if (charset === "") charset = lowerChars; // Fallback
+
+  const array = new Uint32Array(length);
+  window.crypto.getRandomValues(array);
+
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += charset[array[i] % charset.length];
+  }
+  return result;
 }
