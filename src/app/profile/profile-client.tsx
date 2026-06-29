@@ -66,19 +66,23 @@ export default function ProfileClient({ user }: ProfileClientProps) {
       <div className="login-blob login-blob-bottom" />
 
       <div className="glass-panel login-card profile-card">
-        <Link href="/" className="profile-back-link">
-          <ArrowLeft size={16} />
-          Back to vault
-        </Link>
-
-        <div className="login-logo" style={{ marginTop: '1rem' }}>
-          <User size={26} color="#ffffff" />
+        <div className="profile-top-bar">
+          <Link href="/" className="profile-back-link">
+            <ArrowLeft size={16} />
+            Back to vault
+          </Link>
         </div>
 
-        <h1 className="login-title">Your profile</h1>
-        <p className="login-subtitle">
-          Update your display name. Stored securely in your auth account — no separate users table.
-        </p>
+        <div className="profile-brand">
+          <div className="login-logo">
+            <User size={26} color="#ffffff" />
+          </div>
+
+          <h1 className="login-title">Your profile</h1>
+          <p className="login-subtitle">
+            Update your display name. Stored securely in your auth account — no separate users table.
+          </p>
+        </div>
 
         {error && (
           <div className="auth-alert auth-alert-error">

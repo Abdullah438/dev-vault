@@ -409,6 +409,14 @@ p {
 }
 
 /* Category icon grid */
+.generator-options {
+  background: rgba(0, 0, 0, 0.1);
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  margin-bottom: 0.75rem;
+}
+
 .category-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -911,6 +919,30 @@ p {
 
 .profile-card {
   text-align: left;
+}
+
+.profile-top-bar {
+  margin-bottom: 1.25rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.profile-brand {
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.profile-brand .login-logo {
+  margin-bottom: 1rem;
+}
+
+.profile-brand .login-title,
+.profile-brand .login-subtitle {
+  text-align: center;
+}
+
+.profile-brand .login-subtitle {
+  margin-bottom: 0;
 }
 
 .profile-back-link {

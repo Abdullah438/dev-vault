@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { useVaultSession } from '@/components/vault-session-provider';
 import { getDisplayName, hasProfileName } from '@/lib/user-profile';
 import { 
   deriveSaltFromUserId, 
@@ -11,6 +12,7 @@ import {
   encryptClient, 
   decryptClient, 
   generateClientSecretValue,
+  generateAuthSecretValue,
   generateCustomPassword
 } from '@/lib/client-crypto';
 import { 
@@ -40,6 +42,54 @@ import {
   FileBadge
 } from 'lucide-react';
 
+function GitHubIcon({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+    </svg>
+  );
+}
+
+const GENERATABLE_CATEGORIES = ['API Key', 'Auth Secret', 'Password'] as const;
+const PASTE_SECRET_CATEGORIES = ['API Key', 'Auth Secret', 'Password', 'GitHub Token'] as const;
+
+function renderPasswordGeneratorOptions(
+  pwdLength: number,
+  setPwdLength: (v: number) => void,
+  pwdUpper: boolean,
+  setPwdUpper: (v: boolean) => void,
+  pwdLower: boolean,
+  setPwdLower: (v: boolean) => void,
+  pwdNumbers: boolean,
+  setPwdNumbers: (v: boolean) => void,
+  pwdSymbols: boolean,
+  setPwdSymbols: (v: boolean) => void,
+) {
+  return (
+    <div className="generator-options">
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Length: {pwdLength}</span>
+        <input type="range" min="8" max="64" value={pwdLength} onChange={(e) => setPwdLength(parseInt(e.target.value))} style={{ width: '120px' }} />
+      </div>
+      <div style={{ display: 'flex', gap: '1rem', fontSize: '0.8rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdUpper} onChange={(e) => setPwdUpper(e.target.checked)} /> A-Z</label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdLower} onChange={(e) => setPwdLower(e.target.checked)} /> a-z</label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdNumbers} onChange={(e) => setPwdNumbers(e.target.checked)} /> 0-9</label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdSymbols} onChange={(e) => setPwdSymbols(e.target.checked)} /> !@#</label>
+      </div>
+    </div>
+  );
+}
+
+function renderPrefixOption(apiKeyPrefix: string, setApiKeyPrefix: (v: string) => void) {
+  return (
+    <div className="generator-options" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+      <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Prefix:</span>
+      <input type="text" value={apiKeyPrefix} onChange={(e) => setApiKeyPrefix(e.target.value)} className="form-input" style={{ padding: '0.25rem 0.5rem', height: 'auto', fontSize: '0.8rem' }} />
+    </div>
+  );
+}
+
 interface SecretMetadata {
   id: string;
   name: string;
@@ -57,6 +107,7 @@ interface DashboardClientProps {
 export default function DashboardClient({ user, initialSecrets }: DashboardClientProps) {
   const router = useRouter();
   const supabase = createClient();
+  const { masterKey, setMasterKey, lockVault } = useVaultSession();
   
   // Vault secrets metadata state
   const [secrets, setSecrets] = useState<SecretMetadata[]>(initialSecrets);
@@ -64,7 +115,6 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
   // Zero-Knowledge Master Key State
   const [masterPassphrase, setMasterPassphrase] = useState('');
   const [showLockscreenPassphrase, setShowLockscreenPassphrase] = useState(false);
-  const [masterKey, setMasterKey] = useState<CryptoKey | null>(null);
   const [isDerivingKey, setIsDerivingKey] = useState(false);
   const [lockscreenError, setLockscreenError] = useState<string | null>(null);
   
@@ -141,10 +191,34 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
 
   const showProfileBanner = !hasProfileName(user) && !getDisplayName(user);
 
+  const autogenerateSecret = (category: string, target: 'new' | 'edit') => {
+    const value = category === 'Password'
+      ? generateCustomPassword(pwdLength, { upper: pwdUpper, lower: pwdLower, numbers: pwdNumbers, symbols: pwdSymbols })
+      : category === 'Auth Secret'
+        ? generateAuthSecretValue()
+        : generateClientSecretValue(32, apiKeyPrefix);
+
+    if (target === 'new') {
+      setCustomSecretValue(value);
+      setShowNewPlaintext(true);
+    } else {
+      setEditSecretValue(value);
+      setShowEditPlaintext(true);
+    }
+  };
+
+  const handleCategorySelect = (category: string) => {
+    setNewCategory(category);
+    setErrorMsg(null);
+    setCustomSecretValue('');
+    if (category === 'API Key') setApiKeyPrefix('sec_');
+  };
+
   // Logout Handler
   const handleLogout = async () => {
     try {
       setIsLoggingOut(true);
+      lockVault();
       await supabase.auth.signOut();
       router.push('/login');
       router.refresh();
@@ -287,7 +361,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
 
   // Lock Vault
   const handleLockVault = () => {
-    setMasterKey(null);
+    lockVault();
     setMasterPassphrase('');
     setNewlyGeneratedKey(null);
     setRevealedKey(null);
@@ -308,8 +382,13 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
       setErrorMsg('Account Number, Holder Name, and Bank Name are required.');
       return;
     }
-    if (['API Key', 'Auth Secret', 'Password', 'Secure Note', 'SSH Key', 'Crypto Seed Phrase', 'Software License'].includes(newCategory) && !customSecretValue.trim()) {
+    if ([...PASTE_SECRET_CATEGORIES, 'Secure Note', 'SSH Key', 'Crypto Seed Phrase', 'Software License'].includes(newCategory) && !customSecretValue.trim()) {
       setErrorMsg('Secret value cannot be empty.');
+      return;
+    }
+
+    if (newCategory === 'GitHub Token' && !/^(gh[pousr]_|github_pat_)/.test(customSecretValue.trim())) {
+      setErrorMsg('Enter a valid GitHub token (ghp_, github_pat_, gho_, etc.).');
       return;
     }
 
@@ -345,6 +424,10 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
         prefix = 'bnk_' + baNumber.trim().slice(-4); // Last 4 digits of bank account
       } else if (newCategory === 'API Key') {
         prefix = plaintextSecret.length >= 8 ? plaintextSecret.substring(0, 8) : 'usr_api_';
+      } else if (newCategory === 'Auth Secret') {
+        prefix = plaintextSecret.length >= 8 ? plaintextSecret.substring(0, 8) : 'auth_sec';
+      } else if (newCategory === 'GitHub Token') {
+        prefix = plaintextSecret.trim().length >= 8 ? plaintextSecret.trim().substring(0, 8) : 'ghp_';
       } else {
         prefix = 'usr_' + Math.random().toString(36).substring(2, 6);
       }
@@ -493,14 +576,24 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
         plaintextSecret = editSecretValue;
       }
 
+      if (editCategory === 'GitHub Token' && !/^(gh[pousr]_|github_pat_)/.test(plaintextSecret.trim())) {
+        setEditError('Enter a valid GitHub token (ghp_, github_pat_, gho_, etc.).');
+        setIsSavingEdit(false);
+        return;
+      }
+
       // Prefix derivation
       let prefix = 'usr_';
       if (editCategory === 'Credit Card') {
         prefix = 'crd_' + editCcNumber.trim().slice(-4);
       } else if (editCategory === 'Bank Account') {
         prefix = 'bnk_' + editBaNumber.trim().slice(-4);
-      } else if (editCategory === 'API Key' && plaintextSecret.startsWith('sec_')) {
-        prefix = plaintextSecret.substring(0, 8);
+      } else if (editCategory === 'API Key') {
+        prefix = plaintextSecret.length >= 8 ? plaintextSecret.substring(0, 8) : 'usr_api_';
+      } else if (editCategory === 'Auth Secret') {
+        prefix = plaintextSecret.length >= 8 ? plaintextSecret.substring(0, 8) : 'auth_sec';
+      } else if (editCategory === 'GitHub Token') {
+        prefix = plaintextSecret.trim().length >= 8 ? plaintextSecret.trim().substring(0, 8) : 'ghp_';
       } else {
         prefix = 'usr_' + Math.random().toString(36).substring(2, 6);
       }
@@ -662,6 +755,8 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
         return 'badge-api';
       case 'Auth Secret':
         return 'badge-auth';
+      case 'GitHub Token':
+        return 'badge-dev';
       case 'Password':
         return 'badge-password';
       case 'Secure Note':
@@ -1147,6 +1242,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                     {[
                       { id: 'API Key',           icon: <Key size={20} />, label: 'API Key' },
                       { id: 'Auth Secret',        icon: <Lock size={20} />, label: 'Auth Secret' },
+                      { id: 'GitHub Token',       icon: <GitHubIcon size={20} />, label: 'GitHub PAT' },
                       { id: 'Password',           icon: <ShieldCheck size={20} />, label: 'Password' },
                       { id: 'Secure Note',        icon: <FileText size={20} />, label: 'Secure Note' },
                       { id: 'SSH Key',            icon: <Terminal size={20} />, label: 'SSH Key' },
@@ -1159,7 +1255,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                         key={cat.id}
                         type="button"
                         className={`category-card${newCategory === cat.id ? ' selected' : ''}`}
-                        onClick={() => { setNewCategory(cat.id); setErrorMsg(null); }}
+                        onClick={() => handleCategorySelect(cat.id)}
                         style={{
                           borderLeftWidth: newCategory === cat.id ? '4px' : '1.5px',
                           borderLeftColor: newCategory === cat.id ? 'var(--accent-cyan)' : 'var(--glass-border)'
@@ -1290,19 +1386,51 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                   </div>
                 )}
 
-                {/* ── API Key, Auth Secret, Password (Single Input fields) ── */}
-                {['API Key', 'Auth Secret', 'Password'].includes(newCategory) && (
+                {/* ── API Key, Auth Secret, Password, GitHub Token ── */}
+                {PASTE_SECRET_CATEGORIES.includes(newCategory as typeof PASTE_SECRET_CATEGORIES[number]) && (
                   <div className="form-group">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                      <label htmlFor="custom-secret" className="form-label" style={{ marginBottom: 0 }}>Secret Value</label>
-                      <button type="button" onClick={() => { setCustomSecretValue(newCategory === 'Password' ? generateClientSecretValue(24).replace('sec_', '') : generateClientSecretValue(32)); setShowNewPlaintext(true); }} style={{ background: 'transparent', border: 'none', color: 'var(--accent-cyan)', fontSize: '0.75rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                        ⚡ Autogenerate
-                      </button>
+                      <label htmlFor="custom-secret" className="form-label" style={{ marginBottom: 0 }}>
+                        {newCategory === 'GitHub Token' ? 'Personal Access Token' : 'Secret Value'}
+                      </label>
+                      {GENERATABLE_CATEGORIES.includes(newCategory as typeof GENERATABLE_CATEGORIES[number]) && (
+                        <button type="button" onClick={() => autogenerateSecret(newCategory, 'new')} style={{ background: 'transparent', border: 'none', color: 'var(--accent-cyan)', fontSize: '0.75rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                          ⚡ Autogenerate
+                        </button>
+                      )}
                     </div>
+
+                    {newCategory === 'Password' && renderPasswordGeneratorOptions(pwdLength, setPwdLength, pwdUpper, setPwdUpper, pwdLower, setPwdLower, pwdNumbers, setPwdNumbers, pwdSymbols, setPwdSymbols)}
+
+                    {newCategory === 'Auth Secret' && (
+                      <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.45 }}>
+                        Autogenerate produces a raw 384-bit secret (48 random bytes, base64url, no prefix).
+                      </p>
+                    )}
+
+                    {newCategory === 'API Key' && renderPrefixOption(apiKeyPrefix, setApiKeyPrefix)}
+
+                    {newCategory === 'GitHub Token' && (
+                      <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.45 }}>
+                        Paste a token from GitHub → Settings → Developer settings → Personal access tokens.
+                      </p>
+                    )}
+
                     <div style={{ position: 'relative' }}>
-                      <input id="custom-secret" type={showNewPlaintext ? 'text' : 'password'} placeholder="Paste your secret here"
-                        value={customSecretValue} onChange={(e) => setCustomSecretValue(e.target.value)}
-                        className="form-input" style={{ width: '100%', paddingRight: '2.5rem', fontFamily: 'var(--font-mono)' }} required />
+                      <input
+                        id="custom-secret"
+                        type={showNewPlaintext ? 'text' : 'password'}
+                        placeholder={
+                          newCategory === 'GitHub Token' ? 'ghp_xxxxxxxxxxxxxxxxxxxx'
+                          : newCategory === 'Password' ? 'Generated or custom password'
+                          : 'Paste or autogenerate your secret'
+                        }
+                        value={customSecretValue}
+                        onChange={(e) => setCustomSecretValue(e.target.value)}
+                        className="form-input"
+                        style={{ paddingRight: '2.5rem', fontFamily: 'var(--font-mono)' }}
+                        required
+                      />
                       <button type="button" onClick={() => setShowNewPlaintext(!showNewPlaintext)} className="btn" style={{ position: 'absolute', right: '0.25rem', top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', padding: '0.5rem', color: 'var(--text-secondary)' }}>
                         {showNewPlaintext ? <EyeOff size={16} /> : <Eye size={16} />}
                       </button>
@@ -1459,49 +1587,36 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                   </div>
                 )}
 
-                {/* Edit Category: Software License, API Key, Auth Secret, Password (Single Input fields) */}
+                {/* Edit Category: Software License, API Key, Auth Secret, Password, GitHub Token */}
                 {!['Credit Card', 'Bank Account', 'Secure Note', 'SSH Key', 'Crypto Seed Phrase'].includes(editCategory) && (
                   <div className="form-group" style={{ position: 'relative' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                      <label htmlFor="edit-value" className="form-label" style={{ marginBottom: 0 }}>Secret Value</label>
-                      <button type="button" onClick={() => { 
-                        setEditSecretValue(editCategory === 'Password' 
-                          ? generateCustomPassword(pwdLength, { upper: pwdUpper, lower: pwdLower, numbers: pwdNumbers, symbols: pwdSymbols }) 
-                          : generateClientSecretValue(32, apiKeyPrefix)); 
-                        setShowEditPlaintext(true); 
-                      }} style={{ background: 'transparent', border: 'none', color: 'var(--accent-cyan)', fontSize: '0.75rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                        ⚡ Autogenerate
-                      </button>
+                      <label htmlFor="edit-value" className="form-label" style={{ marginBottom: 0 }}>
+                        {editCategory === 'GitHub Token' ? 'Personal Access Token' : 'Secret Value'}
+                      </label>
+                      {GENERATABLE_CATEGORIES.includes(editCategory as typeof GENERATABLE_CATEGORIES[number]) && (
+                        <button type="button" onClick={() => autogenerateSecret(editCategory, 'edit')} style={{ background: 'transparent', border: 'none', color: 'var(--accent-cyan)', fontSize: '0.75rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                          ⚡ Autogenerate
+                        </button>
+                      )}
                     </div>
-                    <div style={{ position: 'relative', marginBottom: '1rem' }}>
-                      <input id="edit-value" type={showEditPlaintext ? 'text' : 'password'} value={editSecretValue} onChange={(e) => setEditSecretValue(e.target.value)} className="form-input" style={{ width: '100%', paddingRight: '3rem', fontFamily: 'var(--font-mono)' }} required />
+
+                    {editCategory === 'Password' && renderPasswordGeneratorOptions(pwdLength, setPwdLength, pwdUpper, setPwdUpper, pwdLower, setPwdLower, pwdNumbers, setPwdNumbers, pwdSymbols, setPwdSymbols)}
+
+                    {editCategory === 'Auth Secret' && (
+                      <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.45 }}>
+                        Autogenerate produces a raw 384-bit secret (48 random bytes, base64url, no prefix).
+                      </p>
+                    )}
+
+                    {editCategory === 'API Key' && renderPrefixOption(apiKeyPrefix, setApiKeyPrefix)}
+
+                    <div style={{ position: 'relative', marginBottom: '0.5rem' }}>
+                      <input id="edit-value" type={showEditPlaintext ? 'text' : 'password'} value={editSecretValue} onChange={(e) => setEditSecretValue(e.target.value)} className="form-input" style={{ paddingRight: '3rem', fontFamily: 'var(--font-mono)' }} required />
                       <button type="button" onClick={() => setShowEditPlaintext(!showEditPlaintext)} className="btn" style={{ position: 'absolute', right: '0.25rem', top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', padding: '0.5rem', color: 'var(--text-secondary)' }}>
                         {showEditPlaintext ? <EyeOff size={18} /> : <Eye size={18} />}
                       </button>
                     </div>
-
-                    {/* Options for Generator */}
-                    {editCategory === 'Password' && (
-                      <div style={{ background: 'rgba(0,0,0,0.1)', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--glass-border)' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Length: {pwdLength}</span>
-                          <input type="range" min="8" max="64" value={pwdLength} onChange={e => setPwdLength(parseInt(e.target.value))} style={{ width: '120px' }} />
-                        </div>
-                        <div style={{ display: 'flex', gap: '1rem', fontSize: '0.8rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdUpper} onChange={e => setPwdUpper(e.target.checked)} /> A-Z</label>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdLower} onChange={e => setPwdLower(e.target.checked)} /> a-z</label>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdNumbers} onChange={e => setPwdNumbers(e.target.checked)} /> 0-9</label>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><input type="checkbox" checked={pwdSymbols} onChange={e => setPwdSymbols(e.target.checked)} /> !@#</label>
-                        </div>
-                      </div>
-                    )}
-
-                    {['API Key', 'Auth Secret'].includes(editCategory) && (
-                      <div style={{ background: 'rgba(0,0,0,0.1)', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--glass-border)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Prefix:</span>
-                        <input type="text" value={apiKeyPrefix} onChange={e => setApiKeyPrefix(e.target.value)} className="form-input" style={{ padding: '0.25rem 0.5rem', height: 'auto', fontSize: '0.8rem' }} />
-                      </div>
-                    )}
                   </div>
                 )}
               </div>

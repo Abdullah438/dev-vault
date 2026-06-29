@@ -43,9 +43,33 @@ CREATE POLICY "Users can delete their own secrets"
     TO authenticated
     USING (auth.uid() = user_id);
 
+-- Policy: Authenticated users can insert secrets for themselves only
+CREATE POLICY "Users can insert their own secrets"
+    ON public.secrets
+    FOR INSERT
+    TO authenticated
+    WITH CHECK (auth.uid() = user_id);
+
 -- Policy: Authenticated users can update their own secrets (editing)
 CREATE POLICY "Users can update their own secrets"
     ON public.secrets
     FOR UPDATE
     TO authenticated
-    USING (auth.uid() = user_id);
+    USING (auth.uid() = user_id)
+    WITH CHECK (auth.uid() = user_id);
+
+-- ==========================================
+-- Migration (run in Supabase SQL Editor on existing projects)
+-- ==========================================
+--
+-- INSERT policy (if missing):
+-- CREATE POLICY "Users can insert their own secrets"
+--     ON public.secrets FOR INSERT TO authenticated
+--     WITH CHECK (auth.uid() = user_id);
+--
+-- UPDATE policy — drop and recreate to add WITH CHECK:
+-- DROP POLICY IF EXISTS "Users can update their own secrets" ON public.secrets;
+-- CREATE POLICY "Users can update their own secrets"
+--     ON public.secrets FOR UPDATE TO authenticated
+--     USING (auth.uid() = user_id)
+--     WITH CHECK (auth.uid() = user_id);

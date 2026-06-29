@@ -97,18 +97,34 @@ export async function decryptClient(ciphertextHex: string, ivHex: string, key: C
 
 /**
  * Generates a secure, random client-side API key (with optional prefix).
+ * Uses 32 bytes of entropy encoded as base64url.
  */
 export function generateClientSecretValue(length: number = 32, prefix: string = 'sec_'): string {
-  const array = new Uint8Array(length);
-  window.crypto.getRandomValues(array);
-  
-  // Base64URL-safe encoding
-  const base64 = btoa(String.fromCharCode(...array))
+  const bytes = new Uint8Array(length);
+  window.crypto.getRandomValues(bytes);
+
+  const base64url = bytesToBase64Url(bytes);
+  return prefix + base64url;
+}
+
+/** 48 bytes (384-bit) entropy — suitable for JWT signing, HMAC, webhook secrets. */
+const AUTH_SECRET_BYTES = 48;
+
+/**
+ * Generates a high-entropy auth secret (384-bit random, full base64url payload).
+ * No prefix — raw secret only, suitable for JWT signing, HMAC, webhook secrets.
+ */
+export function generateAuthSecretValue(): string {
+  const bytes = new Uint8Array(AUTH_SECRET_BYTES);
+  window.crypto.getRandomValues(bytes);
+  return bytesToBase64Url(bytes);
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes))
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
-    
-  return prefix + base64.substring(0, length);
 }
 
 /**
