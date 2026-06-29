@@ -153,7 +153,12 @@ export default function ProfileClient({ user }: ProfileClientProps) {
 
         <div className="auth-footer">
           <Key size={14} style={{ flexShrink: 0, transform: 'rotate(-45deg)' }} />
-          <span>DevVault account settings</span>
+          <span>
+            <Link href="/faq" className="auth-link" style={{ fontSize: '0.75rem' }}>
+              FAQ
+            </Link>
+            {' · '}DevVault account settings
+          </span>
         </div>
       </div>
     </main>

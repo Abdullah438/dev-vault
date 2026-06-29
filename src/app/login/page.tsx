@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, Suspense } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Key, Lock, AlertTriangle, ShieldCheck } from 'lucide-react';
@@ -318,6 +319,12 @@ function LoginContent() {
           <Lock size={14} style={{ flexShrink: 0 }} />
           <span>Encrypted before it leaves your device</span>
         </div>
+
+        {!isResetting && (
+          <p className="login-faq-link">
+            <Link href="/faq">Read the FAQ</Link>
+          </p>
+        )}
       </div>
     </main>
   );
