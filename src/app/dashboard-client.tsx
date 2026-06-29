@@ -1,8 +1,10 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { getDisplayName, hasProfileName } from '@/lib/user-profile';
 import { 
   deriveSaltFromUserId, 
   deriveMasterKey, 
@@ -136,6 +138,8 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
 
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  const showProfileBanner = !hasProfileName(user) && !getDisplayName(user);
 
   // Logout Handler
   const handleLogout = async () => {
@@ -839,10 +843,10 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
         </div>
 
         <div className="header-actions">
-          <div className="header-user-email">
+          <Link href="/profile" className="header-user-link" title="Edit profile">
             <User size={16} />
-            <span>{user?.email}</span>
-          </div>
+            <span className="header-user-email">{getDisplayName(user) || user?.email}</span>
+          </Link>
           <button 
             onClick={handleLockVault} 
             className="btn btn-secondary" 
@@ -862,6 +866,17 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
           </button>
         </div>
       </header>
+
+      {showProfileBanner && (
+        <div className="profile-banner">
+          <p className="profile-banner-text">
+            <strong>Complete your profile</strong> — add your name so it appears across DevVault.
+          </p>
+          <Link href="/profile" className="btn btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>
+            Set up profile
+          </Link>
+        </div>
+      )}
 
       {/* Main vault error logs if any */}
       {errorMsg && (
