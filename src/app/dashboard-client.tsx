@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
@@ -39,7 +39,10 @@ import {
   Terminal,
   Bitcoin,
   Landmark,
-  FileBadge
+  FileBadge,
+  Search,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 function GitHubIcon({ size = 20 }: { size?: number }) {
@@ -102,15 +105,39 @@ interface SecretMetadata {
 interface DashboardClientProps {
   user: any;
   initialSecrets: SecretMetadata[];
+  initialTotal: number;
+  initialVaultTotal: number;
+  pageSize: number;
 }
 
-export default function DashboardClient({ user, initialSecrets }: DashboardClientProps) {
+type UnlockMeta = {
+  total: number;
+  verificationId: string | null;
+  migrationSecretId: string | null;
+};
+
+export default function DashboardClient({
+  user,
+  initialSecrets,
+  initialTotal,
+  initialVaultTotal,
+  pageSize,
+}: DashboardClientProps) {
   const router = useRouter();
   const supabase = createClient();
   const { masterKey, setMasterKey, lockVault } = useVaultSession();
   
-  // Vault secrets metadata state
+  // Vault secrets metadata state (current page from server)
   const [secrets, setSecrets] = useState<SecretMetadata[]>(initialSecrets);
+  const [totalSecrets, setTotalSecrets] = useState(initialTotal);
+  const [totalPages, setTotalPages] = useState(Math.max(1, Math.ceil(initialTotal / pageSize)));
+  const [unlockMeta, setUnlockMeta] = useState<UnlockMeta>({
+    total: initialVaultTotal,
+    verificationId: null,
+    migrationSecretId: null,
+  });
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [isLoadingSecrets, setIsLoadingSecrets] = useState(false);
   
   // Zero-Knowledge Master Key State
   const [masterPassphrase, setMasterPassphrase] = useState('');
@@ -188,6 +215,8 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
 
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
 
   const showProfileBanner = !hasProfileName(user) && !getDisplayName(user);
 
@@ -213,6 +242,61 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
     setCustomSecretValue('');
     if (category === 'API Key') setApiKeyPrefix('sec_');
   };
+
+  const refreshUnlockMeta = async () => {
+    const res = await fetch('/api/secrets/unlock-meta');
+    const data = await res.json();
+    if (res.ok) {
+      setUnlockMeta({
+        total: data.total,
+        verificationId: data.verificationId,
+        migrationSecretId: data.migrationSecretId,
+      });
+    }
+  };
+
+  const fetchSecrets = async (page: number, search: string) => {
+    setIsLoadingSecrets(true);
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(pageSize),
+      });
+      if (search) params.set('search', search);
+
+      const res = await fetch(`/api/secrets?${params}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load secrets.');
+
+      setSecrets(data.data);
+      setTotalSecrets(data.total);
+      setTotalPages(data.totalPages);
+      setCurrentPage(data.page);
+    } catch (err: unknown) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : 'Failed to load secrets.';
+      setErrorMsg(message);
+    } finally {
+      setIsLoadingSecrets(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshUnlockMeta();
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery.trim());
+      setCurrentPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (!masterKey) return;
+    fetchSecrets(currentPage, debouncedSearch);
+  }, [masterKey, currentPage, debouncedSearch]);
 
   // Logout Handler
   const handleLogout = async () => {
@@ -273,13 +357,19 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
       
       // PBKDF2 100,000 iterations to derive AES-256-GCM key
       const key = await deriveMasterKey(masterPassphrase, salt);
-      
-      // 1. Locate verification token
-      const verificationRecord = secrets.find(s => s.name === '__devvault_verification__');
-      
-      if (verificationRecord) {
-        // Verify passphrase against the stored token
-        const res = await fetch(`/api/secrets/${verificationRecord.id}`);
+
+      const metaRes = await fetch('/api/secrets/unlock-meta');
+      const meta = await metaRes.json();
+      if (!metaRes.ok) throw new Error(meta.error || 'Failed to load vault metadata.');
+
+      setUnlockMeta({
+        total: meta.total,
+        verificationId: meta.verificationId,
+        migrationSecretId: meta.migrationSecretId,
+      });
+
+      if (meta.verificationId) {
+        const res = await fetch(`/api/secrets/${meta.verificationId}`);
         const data = await res.json();
         if (!res.ok) throw new Error('Verification request failed.');
         
@@ -288,34 +378,27 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
           if (decrypted !== 'devvault:verified') {
             throw new Error('Verification payload mismatch');
           }
-        } catch (decryptErr) {
+        } catch {
           setLockscreenError('Incorrect Master Passphrase. Please try again.');
           return;
         }
-      } else {
-        // No verification token exists yet.
-        // Find if they have other secrets (migration scenario)
-        const firstSecret = secrets.find(s => s.name !== '__devvault_verification__');
+      } else if (meta.migrationSecretId) {
+        const res = await fetch(`/api/secrets/${meta.migrationSecretId}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error('Migration verification request failed.');
         
-        if (firstSecret) {
-          // Attempt to decrypt first existing secret to verify passphrase correctness
-          const res = await fetch(`/api/secrets/${firstSecret.id}`);
-          const data = await res.json();
-          if (!res.ok) throw new Error('Migration verification request failed.');
-          
-          try {
-            await decryptClient(data.encrypted_secret, data.iv, key);
-          } catch (decryptErr) {
-            setLockscreenError('Incorrect Master Passphrase. Please try again.');
-            return;
-          }
-          
-          // Decryption succeeded! Initialize verification token for future unlocks
-          await createVerificationToken(key);
-        } else {
-          // Vault is completely empty (new user). Initialize verification token
-          await createVerificationToken(key);
+        try {
+          await decryptClient(data.encrypted_secret, data.iv, key);
+        } catch {
+          setLockscreenError('Incorrect Master Passphrase. Please try again.');
+          return;
         }
+        
+        await createVerificationToken(key);
+        await refreshUnlockMeta();
+      } else {
+        await createVerificationToken(key);
+        await refreshUnlockMeta();
       }
       
       setMasterKey(key);
@@ -344,15 +427,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
       });
       const data = await res.json();
       if (res.ok) {
-        const tokenItem: SecretMetadata = {
-          id: data.id,
-          name: data.name,
-          prefix: data.prefix,
-          category: data.category,
-          created_at: data.created_at,
-          last_used_at: null,
-        };
-        setSecrets(prev => [tokenItem, ...prev]);
+        await refreshUnlockMeta();
       }
     } catch (err) {
       console.error('Failed to create verification token:', err);
@@ -451,24 +526,14 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save encrypted key.');
 
-      // Add to list metadata
-      const newSecretItem: SecretMetadata = {
-        id: data.id,
-        name: data.name,
-        prefix: data.prefix,
-        category: data.category,
-        created_at: data.created_at,
-        last_used_at: null,
-      };
-      
-      setSecrets([newSecretItem, ...secrets]);
-      
-      // If they added an API Key or Password, they might want to copy it immediately.
-      // Since it's user-editable before save, we'll still show the popup just in case they clicked Save quickly.
       if (['API Key', 'Password'].includes(newCategory)) {
         setNewlyGeneratedKey(plaintextSecret);
         setNewlyGeneratedName(data.name);
       }
+      
+      setCurrentPage(1);
+      await fetchSecrets(1, debouncedSearch);
+      await refreshUnlockMeta();
       
       // Reset states & Close Modal
       setNewName('');
@@ -720,8 +785,14 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to delete.');
 
-      setSecrets(secrets.filter(sec => sec.id !== deleteTarget.id));
+      const nextTotal = Math.max(0, totalSecrets - 1);
+      const nextTotalPages = Math.max(1, Math.ceil(nextTotal / pageSize));
+      const nextPage = currentPage > nextTotalPages ? nextTotalPages : currentPage;
+
       setDeleteTarget(null);
+      setCurrentPage(nextPage);
+      await fetchSecrets(nextPage, debouncedSearch);
+      await refreshUnlockMeta();
     } catch (err: any) {
       setErrorMsg(err.message || 'Could not revoke the secret.');
     } finally {
@@ -773,7 +844,9 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
     }
   };
 
-  const visibleSecrets = secrets.filter(sec => sec.name !== '__devvault_verification__');
+  const safePage = Math.min(currentPage, totalPages);
+  const paginationStart = totalSecrets === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const paginationEnd = Math.min(safePage * pageSize, totalSecrets);
 
   // Render Lockscreen if local Master Key is not derived
   if (!masterKey) {
@@ -823,7 +896,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
             <strong> We never store or transmit this passphrase.</strong>
           </p>
           <div style={{ display: 'inline-block', background: 'rgba(6,182,212,0.1)', border: '1px solid rgba(6,182,212,0.2)', padding: '0.35rem 0.75rem', borderRadius: '20px', fontSize: '0.75rem', color: 'var(--accent-cyan)', marginBottom: '2rem' }}>
-            {visibleSecrets.length} encrypted items awaiting unlock
+            {unlockMeta.total} encrypted item{unlockMeta.total === 1 ? '' : 's'} awaiting unlock
           </div>
 
           {lockscreenError && (
@@ -1012,7 +1085,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                 borderRadius: '20px',
                 color: 'var(--text-secondary)'
               }}>
-                {visibleSecrets.length} total
+                {totalSecrets}{debouncedSearch ? ' found' : ' total'}
               </span>
             </h2>
 
@@ -1026,7 +1099,31 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
             </button>
           </div>
 
-          {visibleSecrets.length === 0 ? (
+          {unlockMeta.total > 0 && (
+            <div className="secrets-toolbar">
+              <div className="secrets-search">
+                <Search size={16} className="secrets-search-icon" aria-hidden="true" />
+                <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search by name…"
+                  className="form-input secrets-search-input"
+                  aria-label="Search secrets by name"
+                />
+              </div>
+              {debouncedSearch && (
+                <span className="secrets-search-meta">
+                  {totalSecrets} match{totalSecrets === 1 ? '' : 'es'}
+                </span>
+              )}
+              {isLoadingSecrets && (
+                <Loader2 size={16} className="animate-spin" style={{ color: 'var(--text-muted)' }} />
+              )}
+            </div>
+          )}
+
+          {unlockMeta.total === 0 && !debouncedSearch ? (
             <div style={{ 
               textAlign: 'center', 
               padding: '4rem 1rem', 
@@ -1038,8 +1135,20 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
               <p style={{ fontSize: '1rem', fontWeight: 500 }}>No secrets created yet.</p>
               <p style={{ fontSize: '0.85rem' }}>Click "Add New Secret" above to start populating your encrypted vault.</p>
             </div>
+          ) : totalSecrets === 0 ? (
+            <div style={{
+              textAlign: 'center',
+              padding: '3rem 1rem',
+              color: 'var(--text-muted)',
+              border: '1px dashed var(--glass-border)',
+              borderRadius: 'var(--border-radius-sm)'
+            }}>
+              <Search size={40} style={{ opacity: 0.3, marginBottom: '1rem' }} />
+              <p style={{ fontSize: '1rem', fontWeight: 500 }}>No secrets match &ldquo;{debouncedSearch}&rdquo;</p>
+              <p style={{ fontSize: '0.85rem' }}>Try a different name or clear the search.</p>
+            </div>
           ) : (
-            <>
+            <div style={{ opacity: isLoadingSecrets ? 0.6 : 1, transition: 'opacity 0.15s ease' }}>
               {/* Desktop Table View */}
               <div className="table-container">
                 <table className="table">
@@ -1054,7 +1163,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleSecrets.map((sec) => (
+                    {secrets.map((sec) => (
                       <tr key={sec.id}>
                         <td style={{ fontWeight: 600 }}>{sec.name}</td>
                         <td>
@@ -1140,7 +1249,7 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
 
               {/* Mobile Card List */}
               <div className="secret-card-list">
-                {visibleSecrets.map((sec) => (
+                {secrets.map((sec) => (
                   <div key={`mob-${sec.id}`} className="secret-card-item">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                       <div className="stack" style={{ gap: '0.25rem' }}>
@@ -1167,7 +1276,42 @@ export default function DashboardClient({ user, initialSecrets }: DashboardClien
                   </div>
                 ))}
               </div>
-            </>
+
+              {totalSecrets > pageSize && (
+                <div className="secrets-pagination">
+                  <span className="secrets-pagination-info">
+                    {paginationStart}–{paginationEnd} of {totalSecrets}
+                  </span>
+                  <div className="secrets-pagination-controls">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                      disabled={safePage <= 1 || isLoadingSecrets}
+                      aria-label="Previous page"
+                      style={{ padding: '0.45rem 0.75rem' }}
+                    >
+                      <ChevronLeft size={16} />
+                      <span>Prev</span>
+                    </button>
+                    <span className="secrets-pagination-page">
+                      Page {safePage} of {totalPages}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                      disabled={safePage >= totalPages || isLoadingSecrets}
+                      aria-label="Next page"
+                      style={{ padding: '0.45rem 0.75rem' }}
+                    >
+                      <span>Next</span>
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </main>

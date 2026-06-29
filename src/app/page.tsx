@@ -4,31 +4,72 @@ import DashboardClient from './dashboard-client';
 
 export const dynamic = 'force-dynamic';
 
+const SECRETS_PAGE_SIZE = 10;
+const SYSTEM_SECRET_NAME = '__devvault_verification__';
+
 export default async function HomePage() {
   const supabase = await createServer();
-  
-  // Safely check if the user is authenticated
+
   const { data: { user }, error } = await supabase.auth.getUser();
 
   if (error || !user) {
     redirect('/login');
   }
 
-  let initialSecrets: any[] = [];
-  
+  let initialSecrets: Awaited<ReturnType<typeof fetchInitialSecrets>> = {
+    data: [],
+    total: 0,
+    page: 1,
+    limit: SECRETS_PAGE_SIZE,
+    totalPages: 1,
+    vaultTotal: 0,
+  };
+
   try {
-    const adminClient = createAdminClient();
-    const { data } = await adminClient
-      .from('secrets')
-      .select('id, name, prefix, category, created_at, last_used_at')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
-      
-    initialSecrets = data || [];
+    initialSecrets = await fetchInitialSecrets(user.id);
   } catch (err) {
     console.error('Could not fetch initial secrets on SSR:', err);
-    // Continue with empty list, client will handle fallback/error display
   }
 
-  return <DashboardClient user={user} initialSecrets={initialSecrets} />;
+  return (
+    <DashboardClient
+      user={user}
+      initialSecrets={initialSecrets.data}
+      initialTotal={initialSecrets.total}
+      initialVaultTotal={initialSecrets.vaultTotal}
+      pageSize={SECRETS_PAGE_SIZE}
+    />
+  );
+}
+
+async function fetchInitialSecrets(userId: string) {
+  const adminClient = createAdminClient();
+
+  const [{ data, count, error }, { count: vaultTotal }] = await Promise.all([
+    adminClient
+      .from('secrets')
+      .select('id, name, prefix, category, created_at, last_used_at', { count: 'exact' })
+      .eq('user_id', userId)
+      .neq('name', SYSTEM_SECRET_NAME)
+      .order('created_at', { ascending: false })
+      .range(0, SECRETS_PAGE_SIZE - 1),
+    adminClient
+      .from('secrets')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .neq('name', SYSTEM_SECRET_NAME),
+  ]);
+
+  if (error) throw error;
+
+  const total = count ?? 0;
+
+  return {
+    data: data ?? [],
+    total,
+    page: 1,
+    limit: SECRETS_PAGE_SIZE,
+    totalPages: Math.max(1, Math.ceil(total / SECRETS_PAGE_SIZE)),
+    vaultTotal: vaultTotal ?? 0,
+  };
 }
