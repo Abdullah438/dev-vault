@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { createServer, createAdminClient } from '@/lib/supabase/server';
+import { createServer } from '@/lib/supabase/server';
+import { enforceRateLimit } from '@/lib/api-security';
 
 /**
  * GET /api/secrets/[id]
@@ -7,8 +8,11 @@ import { createServer, createAdminClient } from '@/lib/supabase/server';
  */
 export async function GET(
   request: Request,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const limited = enforceRateLimit(request, 'secrets-id-get', 60, 60_000);
+  if (limited) return limited;
+
   try {
     const { id } = await params;
     const supabase = await createServer();
@@ -18,36 +22,31 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const adminClient = createAdminClient();
-
-    // Fetch the encrypted details for this specific secret
-    const { data, error } = await adminClient
+    const { data, error } = await supabase
       .from('secrets')
       .select('encrypted_secret, iv, user_id')
       .eq('id', id)
-      .eq('user_id', user.id) // Ensure ownership
+      .eq('user_id', user.id)
       .single();
 
     if (error || !data) {
       return NextResponse.json({ error: 'Secret not found or unauthorized.' }, { status: 404 });
     }
 
-    // Update auditing timestamp for when the key was last revealed/accessed
-    await adminClient
+    await supabase
       .from('secrets')
       .update({ last_used_at: new Date().toISOString() })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('user_id', user.id);
 
     return NextResponse.json({
       encrypted_secret: data.encrypted_secret,
       iv: data.iv,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error fetching secret payload:', error);
-    return NextResponse.json(
-      { error: error.message || 'An error occurred while retrieving the secret.' },
-      { status: 500 }
-    );
+    const message = error instanceof Error ? error.message : 'An error occurred while retrieving the secret.';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
@@ -57,8 +56,11 @@ export async function GET(
  */
 export async function PUT(
   request: Request,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const limited = enforceRateLimit(request, 'secrets-id-put', 30, 60_000);
+  if (limited) return limited;
+
   try {
     const { id } = await params;
     const supabase = await createServer();
@@ -78,8 +80,7 @@ export async function PUT(
       return NextResponse.json({ error: 'Missing encryption parameters.' }, { status: 400 });
     }
 
-    const adminClient = createAdminClient();
-    const { data, error } = await adminClient
+    const { data, error } = await supabase
       .from('secrets')
       .update({
         name: name.trim(),
@@ -98,12 +99,10 @@ export async function PUT(
     }
 
     return NextResponse.json(data);
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error updating secret:', error);
-    return NextResponse.json(
-      { error: error.message || 'An error occurred while updating the secret.' },
-      { status: 500 }
-    );
+    const message = error instanceof Error ? error.message : 'An error occurred while updating the secret.';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
@@ -113,8 +112,11 @@ export async function PUT(
  */
 export async function DELETE(
   request: Request,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const limited = enforceRateLimit(request, 'secrets-id-delete', 30, 60_000);
+  if (limited) return limited;
+
   try {
     const { id } = await params;
     const supabase = await createServer();
@@ -124,10 +126,7 @@ export async function DELETE(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const adminClient = createAdminClient();
-
-    // Delete the secret ensuring it belongs to the logged-in user
-    const { error } = await adminClient
+    const { error } = await supabase
       .from('secrets')
       .delete()
       .eq('id', id)
@@ -138,11 +137,9 @@ export async function DELETE(
     }
 
     return NextResponse.json({ success: true });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error deleting secret:', error);
-    return NextResponse.json(
-      { error: error.message || 'An error occurred while deleting the secret.' },
-      { status: 500 }
-    );
+    const message = error instanceof Error ? error.message : 'An error occurred while deleting the secret.';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

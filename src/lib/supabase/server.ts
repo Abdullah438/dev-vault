@@ -34,7 +34,8 @@ export async function createServer() {
 
 /**
  * Creates an admin client using the Service Role Key.
- * Bypasses RLS to write and read encrypted data on behalf of verified users.
+ * Prefer createServer() for user-scoped operations — RLS enforces ownership.
+ * Reserved for operational tasks that cannot run under the user's session.
  */
 export function createAdminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;

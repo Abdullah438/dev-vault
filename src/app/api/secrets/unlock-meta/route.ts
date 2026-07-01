@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server';
-import { createServer, createAdminClient } from '@/lib/supabase/server';
-
-const SYSTEM_SECRET_NAME = '__devvault_verification__';
+import { createServer } from '@/lib/supabase/server';
+import { enforceRateLimit } from '@/lib/api-security';
+import { SYSTEM_SECRET_NAME } from '@/lib/vault-constants';
 
 /**
  * GET /api/secrets/unlock-meta
- * Vault unlock helpers: user-facing count, verification token id, migration sample id.
+ * Vault unlock helpers: count, verification token id, migration sample id, KDF config.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const limited = enforceRateLimit(request, 'unlock-meta', 30, 60_000);
+  if (limited) return limited;
+
   try {
     const supabase = await createServer();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -16,46 +19,48 @@ export async function GET() {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const adminClient = createAdminClient();
+    const [
+      { count: total, error: countError },
+      { data: verification, error: verificationError },
+      { data: firstSecret, error: firstSecretError },
+      { data: vaultConfig, error: vaultConfigError },
+    ] = await Promise.all([
+      supabase
+        .from('secrets')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .neq('name', SYSTEM_SECRET_NAME),
+      supabase
+        .from('secrets')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('name', SYSTEM_SECRET_NAME)
+        .maybeSingle(),
+      supabase
+        .from('secrets')
+        .select('id')
+        .eq('user_id', user.id)
+        .neq('name', SYSTEM_SECRET_NAME)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from('user_vault_config')
+        .select('kdf_version, kdf_salt')
+        .eq('user_id', user.id)
+        .maybeSingle(),
+    ]);
 
-    const { count: total, error: countError } = await adminClient
-      .from('secrets')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .neq('name', SYSTEM_SECRET_NAME);
-
-    if (countError) {
-      return NextResponse.json({ error: countError.message }, { status: 500 });
-    }
-
-    const { data: verification, error: verificationError } = await adminClient
-      .from('secrets')
-      .select('id')
-      .eq('user_id', user.id)
-      .eq('name', SYSTEM_SECRET_NAME)
-      .maybeSingle();
-
-    if (verificationError) {
-      return NextResponse.json({ error: verificationError.message }, { status: 500 });
-    }
-
-    const { data: firstSecret, error: firstSecretError } = await adminClient
-      .from('secrets')
-      .select('id')
-      .eq('user_id', user.id)
-      .neq('name', SYSTEM_SECRET_NAME)
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (firstSecretError) {
-      return NextResponse.json({ error: firstSecretError.message }, { status: 500 });
-    }
+    if (countError) return NextResponse.json({ error: countError.message }, { status: 500 });
+    if (verificationError) return NextResponse.json({ error: verificationError.message }, { status: 500 });
+    if (firstSecretError) return NextResponse.json({ error: firstSecretError.message }, { status: 500 });
+    if (vaultConfigError) return NextResponse.json({ error: vaultConfigError.message }, { status: 500 });
 
     return NextResponse.json({
       total: total ?? 0,
       verificationId: verification?.id ?? null,
       migrationSecretId: firstSecret?.id ?? null,
+      vaultConfig: vaultConfig ?? null,
     });
   } catch (error: unknown) {
     console.error('Error fetching unlock meta:', error);
