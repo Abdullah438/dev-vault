@@ -54,13 +54,24 @@ export async function GET(request: Request) {
     if (countError) return NextResponse.json({ error: countError.message }, { status: 500 });
     if (verificationError) return NextResponse.json({ error: verificationError.message }, { status: 500 });
     if (firstSecretError) return NextResponse.json({ error: firstSecretError.message }, { status: 500 });
-    if (vaultConfigError) return NextResponse.json({ error: vaultConfigError.message }, { status: 500 });
+
+    // Gracefully handle deployments that have not run the user_vault_config migration yet.
+    let resolvedVaultConfig = vaultConfig ?? null;
+    if (vaultConfigError) {
+      const message = vaultConfigError.message ?? '';
+      const missingTable =
+        message.includes('user_vault_config') &&
+        (message.includes('does not exist') || message.includes('schema cache'));
+      if (!missingTable) {
+        return NextResponse.json({ error: vaultConfigError.message }, { status: 500 });
+      }
+    }
 
     return NextResponse.json({
       total: total ?? 0,
       verificationId: verification?.id ?? null,
       migrationSecretId: firstSecret?.id ?? null,
-      vaultConfig: vaultConfig ?? null,
+      vaultConfig: resolvedVaultConfig,
     });
   } catch (error: unknown) {
     console.error('Error fetching unlock meta:', error);

@@ -477,7 +477,9 @@ export default function DashboardClient({
       setUnlockMeta(unlockMetaPayload);
 
       const isNewVault =
-        !meta.verificationId && !meta.migrationSecretId && !meta.vaultConfig;
+        !meta.verificationId &&
+        !meta.migrationSecretId &&
+        !meta.vaultConfig;
       if (isNewVault && !isPassphraseAcceptable(masterPassphrase)) {
         setLockscreenError('Choose a stronger passphrase (minimum 12 characters, strength score 3+).');
         return;
@@ -485,7 +487,7 @@ export default function DashboardClient({
 
       try {
         const result = await unlockVaultKey(
-          masterPassphrase,
+          masterPassphrase.trim(),
           user.id,
           unlockMetaPayload,
           fetchSecretPayload,
@@ -493,7 +495,7 @@ export default function DashboardClient({
 
         if (result.needsMigration) {
           const upgradedKey = await runVaultMigration(
-            masterPassphrase,
+            masterPassphrase.trim(),
             result.key,
             meta.verificationId,
           );
@@ -504,14 +506,21 @@ export default function DashboardClient({
       } catch (unlockErr: unknown) {
         const message = unlockErr instanceof Error ? unlockErr.message : '';
         if (message === 'NEW_VAULT') {
-          const { key, saltHex } = await createVaultConfigAndKey(masterPassphrase);
-          await saveVaultConfig(saltHex);
+          const trimmed = masterPassphrase.trim();
+          const { key, saltHex } = await createVaultConfigAndKey(trimmed);
           await createVerificationSecret(key);
+          await saveVaultConfig(saltHex);
           setMasterKey(key);
           return;
         }
         if (message === 'INCORRECT_PASSPHRASE') {
-          setLockscreenError('Incorrect Master Passphrase. Please try again.');
+          setLockscreenError(
+            'Incorrect master passphrase. If you recently upgraded, ensure you are using the same passphrase as before — not your login password.',
+          );
+          return;
+        }
+        if (message.includes('Unable to decrypt')) {
+          setLockscreenError(`${message} Contact support if this persists.`);
           return;
         }
         throw unlockErr;
