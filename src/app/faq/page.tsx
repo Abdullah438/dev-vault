@@ -16,7 +16,7 @@ const faqItems = [
   {
     question: 'How is my data protected?',
     answer:
-      'Your secret values are encrypted in your browser before they are saved. Only encrypted data is sent to our servers. The tagline says it simply: encrypted before it leaves your device.',
+      'Your secret values are encrypted in your browser before they are saved using AES-256-GCM. Keys are derived with Argon2id (64 MiB memory-hard KDF) and a unique per-user salt. Only encrypted ciphertext is sent to our servers.',
   },
   {
     question: 'Do you store my master passphrase?',
@@ -46,7 +46,12 @@ const faqItems = [
   {
     question: 'What happens when I lock the vault or sign out?',
     answer:
-      'Locking clears the encryption key from memory in your browser session. Your secrets stay encrypted on the server, but you must enter your master passphrase again to view or copy them. Signing out also ends your login session.',
+      'Locking clears the encryption key from memory in your browser session. The vault also auto-locks after 15 minutes of inactivity. Your secrets stay encrypted on the server, but you must enter your master passphrase again to view or copy them. Signing out also ends your login session.',
+  },
+  {
+    question: 'How strong should my master passphrase be?',
+    answer:
+      'For new vaults, DevVault requires a minimum 12-character passphrase with a zxcvbn strength score of 3 or higher. Use a unique passphrase or long random string — not a password you use elsewhere.',
   },
   {
     question: 'What exactly is stored on the server?',

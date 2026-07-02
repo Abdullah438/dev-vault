@@ -1,11 +1,11 @@
 import { redirect } from 'next/navigation';
-import { createServer, createAdminClient } from '@/lib/supabase/server';
+import { createServer } from '@/lib/supabase/server';
 import DashboardClient from './dashboard-client';
+import { SYSTEM_SECRET_NAME } from '@/lib/vault-constants';
 
 export const dynamic = 'force-dynamic';
 
 const SECRETS_PAGE_SIZE = 10;
-const SYSTEM_SECRET_NAME = '__devvault_verification__';
 
 export default async function HomePage() {
   const supabase = await createServer();
@@ -26,7 +26,7 @@ export default async function HomePage() {
   };
 
   try {
-    initialSecrets = await fetchInitialSecrets(user.id);
+    initialSecrets = await fetchInitialSecrets(supabase, user.id);
   } catch (err) {
     console.error('Could not fetch initial secrets on SSR:', err);
   }
@@ -42,18 +42,19 @@ export default async function HomePage() {
   );
 }
 
-async function fetchInitialSecrets(userId: string) {
-  const adminClient = createAdminClient();
-
+async function fetchInitialSecrets(
+  supabase: Awaited<ReturnType<typeof createServer>>,
+  userId: string,
+) {
   const [{ data, count, error }, { count: vaultTotal }] = await Promise.all([
-    adminClient
+    supabase
       .from('secrets')
       .select('id, name, prefix, category, created_at, last_used_at', { count: 'exact' })
       .eq('user_id', userId)
       .neq('name', SYSTEM_SECRET_NAME)
       .order('created_at', { ascending: false })
       .range(0, SECRETS_PAGE_SIZE - 1),
-    adminClient
+    supabase
       .from('secrets')
       .select('*', { count: 'exact', head: true })
       .eq('user_id', userId)

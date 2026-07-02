@@ -1,16 +1,24 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { useVaultSession } from '@/components/vault-session-provider';
 import { getDisplayName, hasProfileName } from '@/lib/user-profile';
+import { useAutoLock } from '@/hooks/use-auto-lock';
+import { assessPassphrase, isPassphraseAcceptable, type PassphraseAssessment } from '@/lib/passphrase-strength';
+import { KDF_VERSION_ARGON2, SYSTEM_SECRET_NAME } from '@/lib/vault-constants';
+import { migrateVaultToV2 } from '@/lib/vault-migration';
+import {
+  createVaultConfigAndKey,
+  createVerificationPayload,
+  unlockVaultKey,
+  type UnlockMeta,
+} from '@/lib/vault-unlock';
 import { 
-  deriveSaltFromUserId, 
-  deriveMasterKey, 
-  encryptClient, 
-  decryptClient, 
+  encryptClient,
+  decryptClient,
   generateClientSecretValue,
   generateAuthSecretValue,
   generateCustomPassword
@@ -110,11 +118,7 @@ interface DashboardClientProps {
   pageSize: number;
 }
 
-type UnlockMeta = {
-  total: number;
-  verificationId: string | null;
-  migrationSecretId: string | null;
-};
+type UnlockMetaState = UnlockMeta;
 
 export default function DashboardClient({
   user,
@@ -131,10 +135,11 @@ export default function DashboardClient({
   const [secrets, setSecrets] = useState<SecretMetadata[]>(initialSecrets);
   const [totalSecrets, setTotalSecrets] = useState(initialTotal);
   const [totalPages, setTotalPages] = useState(Math.max(1, Math.ceil(initialTotal / pageSize)));
-  const [unlockMeta, setUnlockMeta] = useState<UnlockMeta>({
+  const [unlockMeta, setUnlockMeta] = useState<UnlockMetaState>({
     total: initialVaultTotal,
     verificationId: null,
     migrationSecretId: null,
+    vaultConfig: null,
   });
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isLoadingSecrets, setIsLoadingSecrets] = useState(false);
@@ -144,6 +149,9 @@ export default function DashboardClient({
   const [showLockscreenPassphrase, setShowLockscreenPassphrase] = useState(false);
   const [isDerivingKey, setIsDerivingKey] = useState(false);
   const [lockscreenError, setLockscreenError] = useState<string | null>(null);
+  const [passphraseAssessment, setPassphraseAssessment] = useState<PassphraseAssessment | null>(null);
+  const [isMigrating, setIsMigrating] = useState(false);
+  const [migrationStatus, setMigrationStatus] = useState<string | null>(null);
   
   // "Add Secret" Modal States
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -251,7 +259,111 @@ export default function DashboardClient({
         total: data.total,
         verificationId: data.verificationId,
         migrationSecretId: data.migrationSecretId,
+        vaultConfig: data.vaultConfig,
       });
+    }
+  };
+
+  const fetchSecretPayload = async (id: string) => {
+    const res = await fetch(`/api/secrets/${id}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to fetch secret.');
+    return data as { encrypted_secret: string; iv: string };
+  };
+
+  const saveVaultConfig = async (saltHex: string) => {
+    const res = await fetch('/api/vault/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kdf_salt: saltHex, kdf_version: KDF_VERSION_ARGON2 }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to save vault config.');
+  };
+
+  const createVerificationSecret = async (key: CryptoKey) => {
+    const { ciphertext, iv } = await createVerificationPayload(key, KDF_VERSION_ARGON2);
+    const res = await fetch('/api/secrets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: SYSTEM_SECRET_NAME,
+        category: 'System',
+        encrypted_secret: ciphertext,
+        iv,
+        prefix: 'ver_',
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to create verification token.');
+    }
+    await refreshUnlockMeta();
+  };
+
+  const runVaultMigration = async (
+    passphrase: string,
+    legacyKey: CryptoKey,
+    verificationId: string | null,
+  ): Promise<CryptoKey> => {
+    setIsMigrating(true);
+    setMigrationStatus('Upgrading vault to Argon2id encryption…');
+    try {
+      const newKey = await migrateVaultToV2(passphrase, legacyKey, verificationId, {
+        fetchAllSecrets: async () => {
+          const records: Array<{
+            id: string;
+            name: string;
+            prefix: string;
+            category: string;
+            encrypted_secret: string;
+            iv: string;
+          }> = [];
+          let page = 1;
+          let totalPages = 1;
+          while (page <= totalPages) {
+            const res = await fetch(`/api/secrets?page=${page}&limit=50`);
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to list secrets for migration.');
+            totalPages = data.totalPages;
+            for (const meta of data.data as SecretMetadata[]) {
+              const payload = await fetchSecretPayload(meta.id);
+              records.push({ ...meta, ...payload });
+            }
+            page += 1;
+          }
+          return records;
+        },
+        updateSecret: async (id, payload) => {
+          const res = await fetch(`/api/secrets/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            const data = await res.json();
+            throw new Error(data.error || 'Failed to update secret during migration.');
+          }
+        },
+        createSecret: async (payload) => {
+          const res = await fetch('/api/secrets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            const data = await res.json();
+            throw new Error(data.error || 'Failed to create verification secret.');
+          }
+        },
+        deleteSecret: async () => {},
+        saveVaultConfig,
+      });
+      await refreshUnlockMeta();
+      return newKey;
+    } finally {
+      setIsMigrating(false);
+      setMigrationStatus(null);
     }
   };
 
@@ -346,63 +458,65 @@ export default function DashboardClient({
   // Derive local Master Key from user passphrase
   const handleUnlockVault = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!masterPassphrase.trim()) return;
+    if (!masterPassphrase.trim() || isMigrating) return;
 
     try {
       setIsDerivingKey(true);
       setLockscreenError(null);
-      
-      // Derive salt consistently from the user's UUID
-      const salt = await deriveSaltFromUserId(user.id);
-      
-      // PBKDF2 100,000 iterations to derive AES-256-GCM key
-      const key = await deriveMasterKey(masterPassphrase, salt);
 
       const metaRes = await fetch('/api/secrets/unlock-meta');
       const meta = await metaRes.json();
       if (!metaRes.ok) throw new Error(meta.error || 'Failed to load vault metadata.');
 
-      setUnlockMeta({
+      const unlockMetaPayload: UnlockMetaState = {
         total: meta.total,
         verificationId: meta.verificationId,
         migrationSecretId: meta.migrationSecretId,
-      });
+        vaultConfig: meta.vaultConfig,
+      };
+      setUnlockMeta(unlockMetaPayload);
 
-      if (meta.verificationId) {
-        const res = await fetch(`/api/secrets/${meta.verificationId}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error('Verification request failed.');
-        
-        try {
-          const decrypted = await decryptClient(data.encrypted_secret, data.iv, key);
-          if (decrypted !== 'devvault:verified') {
-            throw new Error('Verification payload mismatch');
-          }
-        } catch {
-          setLockscreenError('Incorrect Master Passphrase. Please try again.');
-          return;
-        }
-      } else if (meta.migrationSecretId) {
-        const res = await fetch(`/api/secrets/${meta.migrationSecretId}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error('Migration verification request failed.');
-        
-        try {
-          await decryptClient(data.encrypted_secret, data.iv, key);
-        } catch {
-          setLockscreenError('Incorrect Master Passphrase. Please try again.');
-          return;
-        }
-        
-        await createVerificationToken(key);
-        await refreshUnlockMeta();
-      } else {
-        await createVerificationToken(key);
-        await refreshUnlockMeta();
+      const isNewVault =
+        !meta.verificationId && !meta.migrationSecretId && !meta.vaultConfig;
+      if (isNewVault && !isPassphraseAcceptable(masterPassphrase)) {
+        setLockscreenError('Choose a stronger passphrase (minimum 12 characters, strength score 3+).');
+        return;
       }
-      
-      setMasterKey(key);
-    } catch (err: any) {
+
+      try {
+        const result = await unlockVaultKey(
+          masterPassphrase,
+          user.id,
+          unlockMetaPayload,
+          fetchSecretPayload,
+        );
+
+        if (result.needsMigration) {
+          const upgradedKey = await runVaultMigration(
+            masterPassphrase,
+            result.key,
+            meta.verificationId,
+          );
+          setMasterKey(upgradedKey);
+        } else {
+          setMasterKey(result.key);
+        }
+      } catch (unlockErr: unknown) {
+        const message = unlockErr instanceof Error ? unlockErr.message : '';
+        if (message === 'NEW_VAULT') {
+          const { key, saltHex } = await createVaultConfigAndKey(masterPassphrase);
+          await saveVaultConfig(saltHex);
+          await createVerificationSecret(key);
+          setMasterKey(key);
+          return;
+        }
+        if (message === 'INCORRECT_PASSPHRASE') {
+          setLockscreenError('Incorrect Master Passphrase. Please try again.');
+          return;
+        }
+        throw unlockErr;
+      }
+    } catch (err: unknown) {
       console.error(err);
       setLockscreenError('An error occurred during vault verification.');
     } finally {
@@ -410,38 +524,25 @@ export default function DashboardClient({
     }
   };
 
-  // Create internal verification token
-  const createVerificationToken = async (derivedKey: CryptoKey) => {
-    try {
-      const { ciphertext, iv } = await encryptClient('devvault:verified', derivedKey);
-      const res = await fetch('/api/secrets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: '__devvault_verification__',
-          category: 'System',
-          encrypted_secret: ciphertext,
-          iv: iv,
-          prefix: 'ver_'
-        })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        await refreshUnlockMeta();
-      }
-    } catch (err) {
-      console.error('Failed to create verification token:', err);
-    }
-  };
-
   // Lock Vault
-  const handleLockVault = () => {
+  const handleLockVault = useCallback(() => {
     lockVault();
     setMasterPassphrase('');
     setNewlyGeneratedKey(null);
     setRevealedKey(null);
     setErrorMsg(null);
-  };
+    setPassphraseAssessment(null);
+  }, [lockVault]);
+
+  useAutoLock(handleLockVault, Boolean(masterKey));
+
+  useEffect(() => {
+    if (!masterPassphrase) {
+      setPassphraseAssessment(null);
+      return;
+    }
+    setPassphraseAssessment(assessPassphrase(masterPassphrase));
+  }, [masterPassphrase]);
 
   // Generate / Save Secret Handler (Client-Side Encryption)
   const handleCreateSecret = async (e: React.FormEvent) => {
@@ -951,15 +1052,59 @@ export default function DashboardClient({
                   {showLockscreenPassphrase ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
+              {passphraseAssessment && (
+                <div style={{ marginTop: '0.5rem' }}>
+                  <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '0.35rem' }}>
+                    {[0, 1, 2, 3, 4].map((level) => (
+                      <div
+                        key={level}
+                        style={{
+                          flex: 1,
+                          height: '4px',
+                          borderRadius: '2px',
+                          background:
+                            level <= passphraseAssessment.score
+                              ? passphraseAssessment.acceptable
+                                ? 'var(--accent-cyan)'
+                                : 'var(--warning)'
+                              : 'rgba(255,255,255,0.1)',
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0 }}>
+                    Strength: {passphraseAssessment.score}/4
+                    {!passphraseAssessment.acceptable && unlockMeta.total === 0 && !unlockMeta.vaultConfig
+                      ? ' — use 12+ characters and avoid common words'
+                      : ''}
+                  </p>
+                  {passphraseAssessment.warning && (
+                    <p style={{ fontSize: '0.75rem', color: 'var(--warning)', margin: '0.25rem 0 0' }}>
+                      {passphraseAssessment.warning}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
+
+            {migrationStatus && (
+              <p style={{ fontSize: '0.85rem', color: 'var(--accent-cyan)', marginBottom: '1rem' }}>
+                {migrationStatus}
+              </p>
+            )}
             
             <button 
               type="submit" 
-              disabled={isDerivingKey || !masterPassphrase}
+              disabled={isDerivingKey || isMigrating || !masterPassphrase}
               className="btn btn-primary"
               style={{ width: '100%', padding: '0.85rem', height: 'var(--input-h)' }}
             >
-              {isDerivingKey ? (
+              {isMigrating ? (
+                <>
+                  <Loader2 size={18} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
+                  <span>Upgrading encryption…</span>
+                </>
+              ) : isDerivingKey ? (
                 <>
                   <Loader2 size={18} className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
                   <span>Deriving Key...</span>
@@ -1006,7 +1151,7 @@ export default function DashboardClient({
           </div>
           <div>
             <h2 style={{ fontSize: '1.25rem', margin: 0 }}>Dev<span className="text-gradient">Vault</span></h2>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Encrypted vault</span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Auto-locks after 15 min idle</span>
           </div>
         </div>
 

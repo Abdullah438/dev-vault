@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
-import { createServer, createAdminClient } from '@/lib/supabase/server';
+import { createServer } from '@/lib/supabase/server';
+import { enforceRateLimit } from '@/lib/api-security';
+import { SYSTEM_SECRET_NAME } from '@/lib/vault-constants';
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
-const SYSTEM_SECRET_NAME = '__devvault_verification__';
 
 function escapeIlike(term: string): string {
   return term.replace(/[%_\\]/g, '\\$&');
@@ -20,6 +21,9 @@ function parsePositiveInt(value: string | null, fallback: number, max?: number):
  * Paginated secret metadata (excludes system verification token).
  */
 export async function GET(request: Request) {
+  const limited = enforceRateLimit(request, 'secrets-get', 120, 60_000);
+  if (limited) return limited;
+
   try {
     const supabase = await createServer();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -35,8 +39,7 @@ export async function GET(request: Request) {
     const from = (page - 1) * limit;
     const to = from + limit - 1;
 
-    const adminClient = createAdminClient();
-    let query = adminClient
+    let query = supabase
       .from('secrets')
       .select('id, name, prefix, category, created_at, last_used_at', { count: 'exact' })
       .eq('user_id', user.id)
@@ -74,6 +77,9 @@ export async function GET(request: Request) {
  * Saves a client-side encrypted secret payload along with its category.
  */
 export async function POST(request: Request) {
+  const limited = enforceRateLimit(request, 'secrets-post', 30, 60_000);
+  if (limited) return limited;
+
   try {
     const supabase = await createServer();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -92,8 +98,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing client-side encryption parameters.' }, { status: 400 });
     }
 
-    const adminClient = createAdminClient();
-    const { data, error } = await adminClient
+    const { data, error } = await supabase
       .from('secrets')
       .insert({
         user_id: user.id,
