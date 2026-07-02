@@ -45,11 +45,27 @@ export async function migrateVaultToV2(
   callbacks: MigrationCallbacks,
 ): Promise<CryptoKey> {
   const { key: newKey, saltHex } = await createVaultConfigAndKey(passphrase);
+
+  // Persist salt first so a partial migration can still unlock via Argon2id fallback.
+  await callbacks.saveVaultConfig(saltHex);
+
   const secrets = await callbacks.fetchAllSecrets();
   const userSecrets = secrets.filter(s => s.name !== SYSTEM_SECRET_NAME);
 
   for (const secret of userSecrets) {
-    const plaintext = await decryptClient(secret.encrypted_secret, secret.iv, legacyKey);
+    let plaintext: string;
+    try {
+      plaintext = await decryptClient(secret.encrypted_secret, secret.iv, legacyKey);
+    } catch {
+      // Secret may already be on v2 from a previous partial migration.
+      try {
+        await decryptClient(secret.encrypted_secret, secret.iv, newKey);
+        continue;
+      } catch {
+        throw new Error(`Unable to decrypt "${secret.name}" during migration.`);
+      }
+    }
+
     const { ciphertext, iv } = await encryptClient(plaintext, newKey);
     await callbacks.updateSecret(secret.id, {
       name: secret.name,
@@ -83,6 +99,5 @@ export async function migrateVaultToV2(
     });
   }
 
-  await callbacks.saveVaultConfig(saltHex);
   return newKey;
 }

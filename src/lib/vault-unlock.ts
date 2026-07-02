@@ -33,6 +33,16 @@ type SecretPayload = {
   iv: string;
 };
 
+function normalizePassphrase(passphrase: string): string {
+  return passphrase.trim();
+}
+
+function isArgon2Config(config: VaultConfig | null | undefined): config is VaultConfig {
+  if (!config?.kdf_salt) return false;
+  const version = Number(config.kdf_version);
+  return version === KDF_VERSION_ARGON2 && /^[0-9a-f]{64}$/i.test(config.kdf_salt);
+}
+
 async function verifyWithSecret(
   key: CryptoKey,
   secret: SecretPayload,
@@ -46,31 +56,42 @@ async function verifyWithSecret(
   }
 }
 
-export async function unlockVaultKey(
+async function tryDecryptWithKey(key: CryptoKey, secret: SecretPayload): Promise<boolean> {
+  try {
+    await decryptClient(secret.encrypted_secret, secret.iv, key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function tryV2Unlock(
+  passphrase: string,
+  meta: UnlockMeta,
+  fetchSecret: (id: string) => Promise<SecretPayload>,
+): Promise<UnlockResult | null> {
+  if (!isArgon2Config(meta.vaultConfig)) return null;
+
+  const salt = hexToUint8Array(meta.vaultConfig.kdf_salt);
+  const key = await deriveMasterKeyForVersion(passphrase, KDF_VERSION_ARGON2, salt);
+
+  if (meta.verificationId) {
+    const secret = await fetchSecret(meta.verificationId);
+    const valid = await verifyWithSecret(key, secret, [VERIFICATION_PAYLOAD_V2]);
+    if (!valid) return null;
+  }
+
+  return { key, kdfVersion: KDF_VERSION_ARGON2, needsMigration: false };
+}
+
+async function tryLegacyUnlock(
   passphrase: string,
   userId: string,
   meta: UnlockMeta,
   fetchSecret: (id: string) => Promise<SecretPayload>,
-): Promise<UnlockResult> {
-  if (meta.vaultConfig?.kdf_version === KDF_VERSION_ARGON2) {
-    const salt = hexToUint8Array(meta.vaultConfig.kdf_salt);
-    const key = await deriveMasterKeyForVersion(passphrase, KDF_VERSION_ARGON2, salt);
-
-    if (meta.verificationId) {
-      const secret = await fetchSecret(meta.verificationId);
-      const valid = await verifyWithSecret(key, secret, [VERIFICATION_PAYLOAD_V2]);
-      if (!valid) throw new Error('INCORRECT_PASSPHRASE');
-    }
-
-    return { key, kdfVersion: KDF_VERSION_ARGON2, needsMigration: false };
-  }
-
+): Promise<UnlockResult | null> {
   const legacySalt = await deriveSaltFromUserId(userId);
   const legacyKey = await deriveMasterKeyForVersion(passphrase, KDF_VERSION_LEGACY, legacySalt);
-
-  if (!meta.verificationId && !meta.migrationSecretId) {
-    throw new Error('NEW_VAULT');
-  }
 
   if (meta.verificationId) {
     const secret = await fetchSecret(meta.verificationId);
@@ -78,17 +99,51 @@ export async function unlockVaultKey(
       VERIFICATION_PAYLOAD_V1,
       VERIFICATION_PAYLOAD_V2,
     ]);
-    if (!valid) throw new Error('INCORRECT_PASSPHRASE');
-    return { key: legacyKey, kdfVersion: KDF_VERSION_LEGACY, needsMigration: true };
+    if (valid) {
+      return {
+        key: legacyKey,
+        kdfVersion: KDF_VERSION_LEGACY,
+        needsMigration: true,
+      };
+    }
+    return null;
   }
 
-  const secret = await fetchSecret(meta.migrationSecretId!);
-  try {
-    await decryptClient(secret.encrypted_secret, secret.iv, legacyKey);
-  } catch {
-    throw new Error('INCORRECT_PASSPHRASE');
+  if (meta.migrationSecretId) {
+    const secret = await fetchSecret(meta.migrationSecretId);
+    const valid = await tryDecryptWithKey(legacyKey, secret);
+    if (!valid) return null;
+    return {
+      key: legacyKey,
+      kdfVersion: KDF_VERSION_LEGACY,
+      needsMigration: true,
+    };
   }
-  return { key: legacyKey, kdfVersion: KDF_VERSION_LEGACY, needsMigration: true };
+
+  return null;
+}
+
+export async function unlockVaultKey(
+  passphrase: string,
+  userId: string,
+  meta: UnlockMeta,
+  fetchSecret: (id: string) => Promise<SecretPayload>,
+): Promise<UnlockResult> {
+  const normalized = normalizePassphrase(passphrase);
+  if (!normalized) throw new Error('INCORRECT_PASSPHRASE');
+
+  const isNewVault =
+    !meta.verificationId && !meta.migrationSecretId && !isArgon2Config(meta.vaultConfig);
+  if (isNewVault) throw new Error('NEW_VAULT');
+
+  // Prefer Argon2id when configured, but fall back to legacy if verification is still on v1.
+  const v2Result = await tryV2Unlock(normalized, meta, fetchSecret);
+  if (v2Result) return v2Result;
+
+  const legacyResult = await tryLegacyUnlock(normalized, userId, meta, fetchSecret);
+  if (legacyResult) return legacyResult;
+
+  throw new Error('INCORRECT_PASSPHRASE');
 }
 
 export async function createVaultConfigAndKey(passphrase: string): Promise<{
@@ -96,7 +151,11 @@ export async function createVaultConfigAndKey(passphrase: string): Promise<{
   saltHex: string;
 }> {
   const salt = generateRandomSalt();
-  const key = await deriveMasterKeyForVersion(passphrase, KDF_VERSION_ARGON2, salt);
+  const key = await deriveMasterKeyForVersion(
+    normalizePassphrase(passphrase),
+    KDF_VERSION_ARGON2,
+    salt,
+  );
   return { key, saltHex: bufferToHex(salt) };
 }
 
